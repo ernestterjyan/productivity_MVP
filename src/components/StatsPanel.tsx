@@ -2,6 +2,7 @@ import {
   Bar,
   BarChart,
   Cell,
+  Legend,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -42,9 +43,16 @@ export function StatsPanel({
     .map((summary) => ({
       day: formatDayLabel(summary.date),
       tracked: Math.round(summary.trackedMs / 60000),
-      focus: Math.round(summary.totals.ON_SCREEN / 60000),
+      onScreen: Math.round(summary.totals.ON_SCREEN / 60000),
       deskWork: Math.round(summary.totals.DESK_WORK / 60000),
+      away: Math.round(summary.totals.AWAY / 60000),
+      uncertain: Math.round(summary.totals.UNCERTAIN / 60000),
     }))
+  const averageTrackedMinutes = barData.length
+    ? Math.round(
+        barData.reduce((total, summary) => total + summary.tracked, 0) / barData.length,
+      )
+    : 0
 
   return (
     <SectionCard
@@ -68,6 +76,10 @@ export function StatsPanel({
         <article className="metric-tile">
           <span>Today away</span>
           <strong>{formatDurationLong(todaySummary.totals.AWAY)}</strong>
+        </article>
+        <article className="metric-tile">
+          <span>7-day avg tracked</span>
+          <strong>{formatDurationLong(averageTrackedMinutes * 60000)}</strong>
         </article>
       </div>
 
@@ -114,8 +126,39 @@ export function StatsPanel({
                 <BarChart data={barData}>
                   <XAxis dataKey="day" tickLine={false} axisLine={false} />
                   <YAxis tickLine={false} axisLine={false} width={42} />
-                  <Tooltip />
-                  <Bar dataKey="tracked" fill="#27473a" radius={[8, 8, 0, 0]} />
+                  <Tooltip
+                    formatter={(value) =>
+                      formatDurationLong(
+                        (typeof value === 'number' ? value : 0) * 60000,
+                      )
+                    }
+                  />
+                  <Legend />
+                  <Bar
+                    dataKey="onScreen"
+                    stackId="states"
+                    fill={STATE_TINTS.ON_SCREEN}
+                    radius={[8, 8, 0, 0]}
+                    name="On-screen"
+                  />
+                  <Bar
+                    dataKey="deskWork"
+                    stackId="states"
+                    fill={STATE_TINTS.DESK_WORK}
+                    name="Desk work"
+                  />
+                  <Bar
+                    dataKey="away"
+                    stackId="states"
+                    fill={STATE_TINTS.AWAY}
+                    name="Away"
+                  />
+                  <Bar
+                    dataKey="uncertain"
+                    stackId="states"
+                    fill={STATE_TINTS.UNCERTAIN}
+                    name="Uncertain"
+                  />
                 </BarChart>
               </ResponsiveContainer>
             ) : (

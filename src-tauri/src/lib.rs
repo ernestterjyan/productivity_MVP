@@ -10,7 +10,7 @@ use tauri::{Manager, State};
 use crate::database::Database;
 use crate::models::{
     AppSettings, BootstrapPayload, ExportBundle, PersistedSegmentInput, SessionCompletionInput,
-    SessionSeed,
+    SessionCorrectionInput, SessionSeed,
 };
 
 struct AppState {
@@ -63,6 +63,19 @@ fn finish_session(
         .lock()
         .map_err(|_| "database lock poisoned".to_string())?
         .finish_session(payload)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn correct_session(
+    state: State<'_, AppState>,
+    payload: SessionCorrectionInput,
+) -> std::result::Result<BootstrapPayload, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?
+        .correct_session(payload)
         .map_err(|error| error.to_string())
 }
 
@@ -122,6 +135,7 @@ pub fn run() {
             create_session,
             append_state_segment,
             finish_session,
+            correct_session,
             delete_session,
             save_settings,
             export_data

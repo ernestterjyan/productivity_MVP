@@ -117,6 +117,30 @@ describe('attention inference engine', () => {
     expect(second.state).toBe('AWAY')
   })
 
+  it('respects away input grace before promoting no-face away', () => {
+    const engine = new AttentionInferenceEngine()
+    const config = toInferenceConfig(DEFAULT_SETTINGS)
+    const first = engine.update(
+      {
+        ...DEFAULT_WEBCAM_SIGNALS,
+        cameraStatus: 'ACTIVE' as const,
+        faceDetected: false,
+        noFaceDurationMs: config.awayTimeoutMs + 500,
+        lastUpdatedAt: new Date(10_000).toISOString(),
+      },
+      {
+        ...DEFAULT_ACTIVITY_SIGNALS,
+        lastInteractionAt: new Date(9_000).toISOString(),
+        recentInteraction: false,
+      },
+      config,
+      10_000,
+    )
+
+    expect(first.candidateState).toBe('UNCERTAIN')
+    expect(first.reason).toContain('away grace')
+  })
+
   it('promotes desk work only after sustained head-down posture', () => {
     const engine = new AttentionInferenceEngine()
     const config = toInferenceConfig(DEFAULT_SETTINGS)

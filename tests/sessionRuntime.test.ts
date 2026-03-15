@@ -2,6 +2,7 @@ import {
   accountRuntimeTo,
   closeRuntimeSegment,
   createSessionRuntime,
+  hydrateSessionRuntime,
   makeLiveSession,
   openRuntimeSegment,
 } from '@/services/session/runtime'
@@ -95,5 +96,45 @@ describe('session runtime', () => {
     expect(live.elapsedMs).toBe(10_000)
     expect(live.segments).toHaveLength(1)
     expect(live.segments[0]?.isActive).toBe(true)
+  })
+
+  it('hydrates runtime totals from persisted segments for recovery', () => {
+    const runtime = hydrateSessionRuntime(
+      {
+        id: 'session-4',
+        startedAt: new Date('2026-03-15T12:00:00.000Z').toISOString(),
+      },
+      [
+        {
+          id: 'seg-a',
+          sessionId: 'session-4',
+          state: 'ON_SCREEN',
+          startedAt: new Date('2026-03-15T12:00:00.000Z').toISOString(),
+          endedAt: new Date('2026-03-15T12:10:00.000Z').toISOString(),
+          durationMs: 600_000,
+          confidence: 0.8,
+          reason: 'Recovered segment A',
+          source: 'INFERENCE',
+          manualNote: null,
+        },
+        {
+          id: 'seg-b',
+          sessionId: 'session-4',
+          state: 'DESK_WORK',
+          startedAt: new Date('2026-03-15T12:10:00.000Z').toISOString(),
+          endedAt: new Date('2026-03-15T12:15:00.000Z').toISOString(),
+          durationMs: 300_000,
+          confidence: 1,
+          reason: 'Recovered segment B',
+          source: 'MANUAL',
+          manualNote: 'Manual',
+        },
+      ],
+    )
+
+    expect(runtime.totals.ON_SCREEN).toBe(600_000)
+    expect(runtime.totals.DESK_WORK).toBe(300_000)
+    expect(runtime.closedSegments).toHaveLength(2)
+    expect(runtime.activeSegmentState).toBeNull()
   })
 })

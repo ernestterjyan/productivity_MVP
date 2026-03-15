@@ -115,6 +115,7 @@ pub struct BootstrapPayload {
     pub today_summary: DailySummary,
     pub daily_history: Vec<DailySummary>,
     pub recent_sessions: Vec<SessionRecord>,
+    pub recoverable_session: Option<RecoverableSession>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +147,21 @@ pub struct SessionCompletionInput {
     pub ended_at: String,
     pub elapsed_ms: i64,
     pub totals: StateTotals,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCorrectionInput {
+    pub session_id: String,
+    pub state: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoverableSession {
+    pub session: SessionSeed,
+    pub segments: Vec<PersistedSegmentInput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

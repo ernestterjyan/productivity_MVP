@@ -32,6 +32,7 @@ import {
   accountRuntimeTo,
   closeRuntimeSegment,
   createSessionRuntime,
+  hydrateSessionRuntime,
   makeLiveSession,
   openRuntimeSegment,
   runtimeSegmentMatches,
@@ -97,6 +98,7 @@ export function useProductivityTracker() {
   const [hydrated, setHydrated] = useState(false)
   const [busy, setBusy] = useState(false)
   const [exportBusy, setExportBusy] = useState(false)
+  const [correctionBusySessionId, setCorrectionBusySessionId] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [manualOverride, setManualOverride] = useState<ManualOverrideState | null>(null)
   const [calibrationOpen, setCalibrationOpen] = useState(false)
@@ -169,12 +171,30 @@ export function useProductivityTracker() {
         }
 
         persistedSettingsRef.current = JSON.stringify(payload.settings)
+        const recoverableRuntime = payload.recoverableSession
+          ? hydrateSessionRuntime(
+              payload.recoverableSession.session,
+              payload.recoverableSession.segments,
+            )
+          : null
+        runtimeRef.current = recoverableRuntime
         startTransition(() => {
           setSettings(payload.settings)
           setTodaySummary(payload.todaySummary)
           setDailyHistory(payload.dailyHistory)
           setRecentSessions(payload.recentSessions)
+          setSessionStatus(recoverableRuntime ? 'PAUSED' : 'IDLE')
+          setCurrentSession(
+            recoverableRuntime
+              ? makeLiveSession(recoverableRuntime, 'PAUSED', Date.now())
+              : null,
+          )
         })
+        if (recoverableRuntime) {
+          setErrorMessage(
+            'Recovered a previous active session. Review and resume, stop, or reset it.',
+          )
+        }
       } catch (error) {
         if (!cancelled) {
           setErrorMessage(
@@ -270,13 +290,18 @@ export function useProductivityTracker() {
   }, [busy, sessionStatus])
 
   useEffect(() => {
-    if (!hydrated || autoStartRef.current || !settings.startTrackingOnOpen) {
+    if (
+      !hydrated ||
+      autoStartRef.current ||
+      !settings.startTrackingOnOpen ||
+      sessionStatus !== 'IDLE'
+    ) {
       return
     }
 
     autoStartRef.current = true
     void handleStartSession()
-  }, [handleStartSession, hydrated, settings.startTrackingOnOpen])
+  }, [handleStartSession, hydrated, sessionStatus, settings.startTrackingOnOpen])
 
   useEffect(() => {
     if (sessionStatus !== 'RUNNING') {
@@ -507,6 +532,36 @@ export function useProductivityTracker() {
     }
   }, [exportBusy])
 
+  const handleRetrospectiveCorrection = useCallback(async (
+    sessionId: string,
+    state: AttentionState,
+  ) => {
+    if (correctionBusySessionId || sessionStatus !== 'IDLE') {
+      if (sessionStatus !== 'IDLE') {
+        setErrorMessage('Stop or reset the active session before retrospective correction.')
+      }
+      return
+    }
+
+    setCorrectionBusySessionId(sessionId)
+    setErrorMessage(null)
+
+    try {
+      const payload = await storageRef.current.correctSession({
+        sessionId,
+        state,
+        note: `Retrospective correction: marked entire session as ${STATE_LABELS[state].toLowerCase()}.`,
+      })
+      syncHistory(payload)
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to apply retrospective correction.',
+      )
+    } finally {
+      setCorrectionBusySessionId(null)
+    }
+  }, [correctionBusySessionId, sessionStatus, syncHistory])
+
   return {
     view,
     setView,
@@ -519,6 +574,7 @@ export function useProductivityTracker() {
     sessionStatus,
     busy,
     exportBusy,
+    correctionBusySessionId,
     hydrated,
     errorMessage,
     clearError,
@@ -534,6 +590,7 @@ export function useProductivityTracker() {
     saveCalibration,
     clearCalibration,
     handleExport,
+    handleRetrospectiveCorrection,
     clearManualOverride,
     handleManualCorrection,
     handleStartSession,

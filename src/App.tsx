@@ -121,9 +121,14 @@ function App() {
 
       {showHistory ? (
         <HistoryPanel
+          correctionBusySessionId={tracker.correctionBusySessionId}
           exportBusy={tracker.exportBusy}
           onExport={(format) => void tracker.handleExport(format)}
+          onRetrospectiveCorrection={(sessionId, state) =>
+            void tracker.handleRetrospectiveCorrection(sessionId, state)
+          }
           recentSessions={tracker.recentSessions}
+          sessionStatus={tracker.sessionStatus}
         />
       ) : null}
 

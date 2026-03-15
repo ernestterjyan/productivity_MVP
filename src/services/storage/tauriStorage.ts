@@ -4,6 +4,7 @@ import type {
   BootstrapPayload,
   ExportBundle,
   PersistedSegmentInput,
+  SessionCorrectionInput,
   SessionCompletionInput,
   SessionSeed,
 } from '@/types/app'
@@ -22,6 +23,9 @@ export function createTauriStorageClient(): StorageClient {
     },
     finishSession(payload: SessionCompletionInput) {
       return invoke<BootstrapPayload>('finish_session', { payload })
+    },
+    correctSession(payload: SessionCorrectionInput) {
+      return invoke<BootstrapPayload>('correct_session', { payload })
     },
     deleteSession(sessionId: string) {
       return invoke<BootstrapPayload>('delete_session', { sessionId })

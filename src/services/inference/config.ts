@@ -106,6 +106,7 @@ export const DEFAULT_BOOTSTRAP = {
   todaySummary: createEmptyDailySummary(),
   dailyHistory: [createEmptyDailySummary()],
   recentSessions: [],
+  recoverableSession: null,
 }
 
 function buildThresholds(settings: AppSettings): InferenceThresholds {

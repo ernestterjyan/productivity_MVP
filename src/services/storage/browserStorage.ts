@@ -12,6 +12,7 @@ import type {
   DailySummary,
   ExportBundle,
   PersistedSegmentInput,
+  SessionCorrectionInput,
   SessionCompletionInput,
   SessionRecord,
   StateTotals,
@@ -128,10 +129,22 @@ function normalizeStore(store: BrowserStore) {
   const completedSessions = store.sessions.filter(
     (session) => session.status === 'COMPLETED',
   )
-  const normalizedSessions = completedSessions.map((session) => ({
+  const normalizedCompletedSessions = completedSessions.map((session) => ({
     ...session,
     totals: normalizeTotals(session.totals),
   }))
+  const recoverableSession = [...store.sessions]
+    .filter((session) => session.status === 'ACTIVE')
+    .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
+  const normalizedRecoverableSession = recoverableSession
+    ? {
+        ...recoverableSession,
+        totals: normalizeTotals(recoverableSession.totals),
+      }
+    : null
+  const normalizedSessions = normalizedRecoverableSession
+    ? [...normalizedCompletedSessions, normalizedRecoverableSession]
+    : normalizedCompletedSessions
   const allowedSessionIds = new Set(normalizedSessions.map((session) => session.id))
 
   store.sessions = normalizedSessions
@@ -289,7 +302,8 @@ function pruneStore(store: BrowserStore) {
   const cutoff = Date.now() - store.settings.retentionDays * 24 * 60 * 60 * 1000
 
   store.sessions = store.sessions.filter(
-    (session) => Date.parse(session.startedAt) >= cutoff,
+    (session) =>
+      session.status === 'ACTIVE' || Date.parse(session.startedAt) >= cutoff,
   )
   const allowedSessionIds = new Set(store.sessions.map((session) => session.id))
   store.segments = store.segments.filter((segment) =>
@@ -304,6 +318,10 @@ function toBootstrap(store: BrowserStore): BootstrapPayload {
     store.dailySummaries.find((summary) => summary.date === todayKey) ??
     createEmptyDailySummary(todayKey)
 
+  const recoverable = [...store.sessions]
+    .filter((session) => session.status === 'ACTIVE')
+    .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
+
   return {
     settings: store.settings,
     todaySummary,
@@ -315,6 +333,17 @@ function toBootstrap(store: BrowserStore): BootstrapPayload {
       .filter((session) => session.status === 'COMPLETED')
       .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
       .slice(0, 12),
+    recoverableSession: recoverable
+      ? {
+          session: {
+            id: recoverable.id,
+            startedAt: recoverable.startedAt,
+          },
+          segments: [...store.segments]
+            .filter((segment) => segment.sessionId === recoverable.id)
+            .sort((left, right) => left.startedAt.localeCompare(right.startedAt)),
+        }
+      : null,
   }
 }
 
@@ -347,6 +376,15 @@ export function createBrowserStorageClient(): StorageClient {
 
     async createSession(startedAt: string): Promise<SessionSeed> {
       const store = readStore()
+      const activeSessionIds = new Set(
+        store.sessions
+          .filter((session) => session.status === 'ACTIVE')
+          .map((session) => session.id),
+      )
+      store.sessions = store.sessions.filter((session) => session.status !== 'ACTIVE')
+      store.segments = store.segments.filter((segment) =>
+        !activeSessionIds.has(segment.sessionId),
+      )
       const session: SessionRecord = {
         id: crypto.randomUUID(),
         startedAt,
@@ -386,6 +424,46 @@ export function createBrowserStorageClient(): StorageClient {
             }
           : session,
       )
+      rebuildDailySummaries(store)
+      pruneStore(store)
+      writeStore(store)
+      return toBootstrap(store)
+    },
+
+    async correctSession(payload: SessionCorrectionInput) {
+      const store = readStore()
+      const target = store.sessions.find(
+        (session) =>
+          session.id === payload.sessionId && session.status === 'COMPLETED',
+      )
+
+      if (!target || !target.endedAt) {
+        throw new Error('Session not found or not eligible for correction.')
+      }
+
+      const correctedTotals = createEmptyTotals()
+      addStateDuration(correctedTotals, payload.state, target.elapsedMs)
+      store.sessions = store.sessions.map((session) =>
+        session.id === target.id
+          ? {
+              ...session,
+              totals: cloneTotals(correctedTotals),
+            }
+          : session,
+      )
+      store.segments = store.segments.filter((segment) => segment.sessionId !== target.id)
+      store.segments.push({
+        id: crypto.randomUUID(),
+        sessionId: target.id,
+        state: payload.state,
+        startedAt: target.startedAt,
+        endedAt: target.endedAt,
+        durationMs: target.elapsedMs,
+        confidence: 1,
+        reason: payload.note,
+        source: 'MANUAL',
+        manualNote: payload.note,
+      })
       rebuildDailySummaries(store)
       pruneStore(store)
       writeStore(store)

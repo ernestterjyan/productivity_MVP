@@ -176,6 +176,7 @@ export interface BootstrapPayload {
   todaySummary: DailySummary
   dailyHistory: DailySummary[]
   recentSessions: SessionRecord[]
+  recoverableSession: RecoverableSession | null
 }
 
 export interface SessionSeed {
@@ -201,6 +202,17 @@ export interface SessionCompletionInput {
   endedAt: string
   elapsedMs: number
   totals: StateTotals
+}
+
+export interface SessionCorrectionInput {
+  sessionId: string
+  state: AttentionState
+  note: string
+}
+
+export interface RecoverableSession {
+  session: SessionSeed
+  segments: PersistedSegmentInput[]
 }
 
 export interface ExportBundle {

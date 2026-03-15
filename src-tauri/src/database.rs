@@ -3,13 +3,13 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Local, LocalResult, NaiveDateTime, TimeZone, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::models::{
     empty_daily_summary, AppSettings, BootstrapPayload, DailySummary, ExportBundle,
-    PersistedSegmentInput, SessionCompletionInput, SessionRecord, SessionRecordStatus, SessionSeed,
-    StateTotals,
+    PersistedSegmentInput, RecoverableSession, SessionCompletionInput, SessionCorrectionInput,
+    SessionRecord, SessionRecordStatus, SessionSeed, StateTotals,
 };
 
 pub struct Database {
@@ -29,7 +29,7 @@ impl Database {
     }
 
     pub fn bootstrap(&mut self) -> Result<BootstrapPayload> {
-        self.reconcile_incomplete_sessions()?;
+        let recoverable_session_id = self.retain_latest_active_session()?;
         let settings = self.read_settings()?;
 
         if settings.retention_enabled {
@@ -54,10 +54,12 @@ impl Database {
                 daily_history
             },
             recent_sessions: self.read_recent_sessions()?,
+            recoverable_session: self.read_recoverable_session(recoverable_session_id.as_deref())?,
         })
     }
 
     pub fn create_session(&mut self, started_at: String) -> Result<SessionSeed> {
+        self.clear_active_sessions()?;
         let session_id = Uuid::new_v4().to_string();
         self.connection.execute(
             r#"
@@ -140,6 +142,98 @@ impl Database {
                 payload.session_id,
             ],
         )?;
+        self.rebuild_daily_summaries()?;
+        self.bootstrap()
+    }
+
+    pub fn correct_session(&mut self, payload: SessionCorrectionInput) -> Result<BootstrapPayload> {
+        let SessionCorrectionInput {
+            session_id,
+            state,
+            note,
+        } = payload;
+        let session = self.connection.query_row(
+            r#"
+            SELECT started_at, ended_at, elapsed_ms, status
+            FROM sessions
+            WHERE id = ?1
+            "#,
+            params![session_id.clone()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )?;
+
+        let (started_at, ended_at, elapsed_ms, status) = session;
+        let safe_elapsed_ms = std::cmp::max(0, elapsed_ms);
+
+        if status != "COMPLETED" {
+            anyhow::bail!("Only completed sessions can be corrected.");
+        }
+
+        let ended_at = ended_at.context("completed session is missing an end timestamp")?;
+        let mut corrected_totals = StateTotals::empty();
+        add_state_duration(&mut corrected_totals, &state, safe_elapsed_ms);
+
+        self.connection.execute(
+            r#"
+            UPDATE sessions
+            SET on_screen_ms = ?1,
+                writing_ms = ?2,
+                away_ms = ?3,
+                uncertain_ms = ?4,
+                elapsed_ms = ?5
+            WHERE id = ?6
+            "#,
+            params![
+                corrected_totals.on_screen,
+                corrected_totals.desk_work,
+                corrected_totals.away,
+                corrected_totals.uncertain,
+                safe_elapsed_ms,
+                session_id.clone(),
+            ],
+        )?;
+
+        self.connection.execute(
+            "DELETE FROM state_segments WHERE session_id = ?1",
+            params![session_id.clone()],
+        )?;
+        self.connection.execute(
+            r#"
+            INSERT INTO state_segments (
+              id,
+              session_id,
+              state,
+              started_at,
+              ended_at,
+              duration_ms,
+              confidence,
+              reason,
+              source,
+              manual_note,
+              created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'MANUAL', ?9, ?10)
+            "#,
+            params![
+                Uuid::new_v4().to_string(),
+                session_id,
+                normalize_state_name(&state),
+                started_at,
+                ended_at,
+                safe_elapsed_ms,
+                1.0,
+                note.clone(),
+                note,
+                now_iso(),
+            ],
+        )?;
+
         self.rebuild_daily_summaries()?;
         self.bootstrap()
     }
@@ -266,7 +360,7 @@ impl Database {
         Ok(())
     }
 
-    fn reconcile_incomplete_sessions(&mut self) -> Result<()> {
+    fn clear_active_sessions(&mut self) -> Result<()> {
         self.connection.execute(
             "DELETE FROM state_segments WHERE session_id IN (SELECT id FROM sessions WHERE status = 'ACTIVE')",
             [],
@@ -274,6 +368,36 @@ impl Database {
         self.connection
             .execute("DELETE FROM sessions WHERE status = 'ACTIVE'", [])?;
         Ok(())
+    }
+
+    fn retain_latest_active_session(&mut self) -> Result<Option<String>> {
+        let latest_active_id: Option<String> = self
+            .connection
+            .query_row(
+                r#"
+                SELECT id
+                FROM sessions
+                WHERE status = 'ACTIVE'
+                ORDER BY started_at DESC
+                LIMIT 1
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(session_id) = latest_active_id.clone() {
+            self.connection.execute(
+                "DELETE FROM state_segments WHERE session_id IN (SELECT id FROM sessions WHERE status = 'ACTIVE' AND id <> ?1)",
+                params![session_id.clone()],
+            )?;
+            self.connection.execute(
+                "DELETE FROM sessions WHERE status = 'ACTIVE' AND id <> ?1",
+                params![session_id],
+            )?;
+        }
+
+        Ok(latest_active_id)
     }
 
     fn read_settings(&self) -> Result<AppSettings> {
@@ -284,6 +408,63 @@ impl Database {
         )?;
 
         Ok(serde_json::from_str(&raw).unwrap_or_default())
+    }
+
+    fn read_recoverable_session(
+        &self,
+        recoverable_session_id: Option<&str>,
+    ) -> Result<Option<RecoverableSession>> {
+        let Some(session_id) = recoverable_session_id else {
+            return Ok(None);
+        };
+
+        let started_at: String = self.connection.query_row(
+            "SELECT started_at FROM sessions WHERE id = ?1 AND status = 'ACTIVE'",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT
+              id,
+              session_id,
+              state,
+              started_at,
+              ended_at,
+              duration_ms,
+              confidence,
+              reason,
+              source,
+              manual_note
+            FROM state_segments
+            WHERE session_id = ?1
+            ORDER BY started_at ASC
+            "#,
+        )?;
+        let rows = statement.query_map(params![session_id], |row| {
+            let raw_state: String = row.get(2)?;
+            Ok(PersistedSegmentInput {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                state: normalize_state_name(&raw_state),
+                started_at: row.get(3)?,
+                ended_at: row.get(4)?,
+                duration_ms: row.get(5)?,
+                confidence: row.get(6)?,
+                reason: row.get(7)?,
+                source: row.get(8)?,
+                manual_note: row.get(9)?,
+            })
+        })?;
+        let segments = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+
+        Ok(Some(RecoverableSession {
+            session: SessionSeed {
+                id: session_id.to_string(),
+                started_at,
+            },
+            segments,
+        }))
     }
 
     fn read_recent_sessions(&self) -> Result<Vec<SessionRecord>> {
@@ -514,11 +695,11 @@ impl Database {
         let cutoff = (Utc::now() - Duration::days(retention_days)).to_rfc3339();
 
         self.connection.execute(
-            "DELETE FROM state_segments WHERE session_id IN (SELECT id FROM sessions WHERE started_at < ?1)",
+            "DELETE FROM state_segments WHERE session_id IN (SELECT id FROM sessions WHERE status = 'COMPLETED' AND started_at < ?1)",
             params![cutoff.clone()],
         )?;
         self.connection.execute(
-            "DELETE FROM sessions WHERE started_at < ?1",
+            "DELETE FROM sessions WHERE status = 'COMPLETED' AND started_at < ?1",
             params![cutoff],
         )?;
         Ok(())
@@ -672,8 +853,20 @@ fn normalize_state_name(state: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_local_datetime, split_segment_by_local_day};
-    use chrono::Local;
+    use super::{resolve_local_datetime, split_segment_by_local_day, Database};
+    use crate::models::{PersistedSegmentInput, SessionCompletionInput, SessionCorrectionInput};
+    use chrono::{Duration, Local};
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn make_database_path() -> PathBuf {
+        std::env::temp_dir().join(format!("focus-estimate-test-{}.sqlite", Uuid::new_v4()))
+    }
+
+    fn make_database() -> Database {
+        let path = make_database_path();
+        Database::new(&path).expect("database should initialize")
+    }
 
     #[test]
     fn splits_segment_across_two_local_days() {
@@ -704,5 +897,104 @@ mod tests {
 
         assert_eq!(slices.len(), 1);
         assert_eq!(slices[0].1, 30_000);
+    }
+
+    #[test]
+    fn bootstrap_includes_recoverable_active_session() {
+        let mut database = make_database();
+        let started_at = Local::now().to_rfc3339();
+        let seed = database
+            .create_session(started_at.clone())
+            .expect("session should be created");
+        let ended_at = (Local::now() + Duration::minutes(1)).to_rfc3339();
+
+        database
+            .append_state_segment(PersistedSegmentInput {
+                id: Uuid::new_v4().to_string(),
+                session_id: seed.id.clone(),
+                state: "UNCERTAIN".to_string(),
+                started_at,
+                ended_at,
+                duration_ms: 60_000,
+                confidence: 0.4,
+                reason: "Recoverable test segment".to_string(),
+                source: "INFERENCE".to_string(),
+                manual_note: None,
+            })
+            .expect("segment should be stored");
+
+        let payload = database.bootstrap().expect("bootstrap should succeed");
+
+        assert!(payload.recoverable_session.is_some());
+        assert_eq!(
+            payload
+                .recoverable_session
+                .expect("recoverable payload present")
+                .session
+                .id,
+            seed.id
+        );
+    }
+
+    #[test]
+    fn correction_rewrites_totals_and_segments() {
+        let mut database = make_database();
+        let started_at = Local::now().to_rfc3339();
+        let ended_at = (Local::now() + Duration::minutes(20)).to_rfc3339();
+        let seed = database
+            .create_session(started_at.clone())
+            .expect("session should be created");
+
+        database
+            .append_state_segment(PersistedSegmentInput {
+                id: Uuid::new_v4().to_string(),
+                session_id: seed.id.clone(),
+                state: "ON_SCREEN".to_string(),
+                started_at: started_at.clone(),
+                ended_at: ended_at.clone(),
+                duration_ms: 20 * 60 * 1000,
+                confidence: 0.8,
+                reason: "Original segment".to_string(),
+                source: "INFERENCE".to_string(),
+                manual_note: None,
+            })
+            .expect("segment should be stored");
+        database
+            .finish_session(SessionCompletionInput {
+                session_id: seed.id.clone(),
+                ended_at: ended_at.clone(),
+                elapsed_ms: 20 * 60 * 1000,
+                totals: crate::models::StateTotals {
+                    on_screen: 20 * 60 * 1000,
+                    desk_work: 0,
+                    away: 0,
+                    uncertain: 0,
+                },
+            })
+            .expect("session should be completed");
+
+        let corrected = database
+            .correct_session(SessionCorrectionInput {
+                session_id: seed.id.clone(),
+                state: "DESK_WORK".to_string(),
+                note: "Retrospective correction test.".to_string(),
+            })
+            .expect("correction should succeed");
+        let corrected_session = corrected
+            .recent_sessions
+            .into_iter()
+            .find(|session| session.id == seed.id)
+            .expect("corrected session should exist");
+        let export = database.export_data().expect("export should succeed");
+        let corrected_segments: Vec<_> = export
+            .state_segments
+            .into_iter()
+            .filter(|segment| segment.session_id == seed.id)
+            .collect();
+
+        assert_eq!(corrected_session.totals.desk_work, 20 * 60 * 1000);
+        assert_eq!(corrected_session.totals.on_screen, 0);
+        assert_eq!(corrected_segments.len(), 1);
+        assert_eq!(corrected_segments[0].source, "MANUAL");
     }
 }

@@ -52,6 +52,32 @@ export function createSessionRuntime(seed: SessionSeed): SessionRuntime {
   }
 }
 
+export function hydrateSessionRuntime(
+  seed: SessionSeed,
+  segments: PersistedSegmentInput[],
+): SessionRuntime {
+  const runtime = createSessionRuntime(seed)
+  const orderedSegments = [...segments].sort((left, right) =>
+    left.startedAt.localeCompare(right.startedAt),
+  )
+
+  for (const segment of orderedSegments) {
+    const durationMs = Math.max(0, segment.durationMs)
+
+    if (durationMs <= 0) {
+      continue
+    }
+
+    runtime.closedSegments.push({
+      ...segment,
+      durationMs,
+    })
+    addToTotals(runtime.totals, segment.state, durationMs)
+  }
+
+  return runtime
+}
+
 export function accountRuntimeTo(runtime: SessionRuntime, nowMs: number) {
   if (
     runtime.activeSegmentState === null ||

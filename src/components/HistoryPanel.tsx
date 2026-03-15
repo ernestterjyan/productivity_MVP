@@ -1,5 +1,11 @@
+import { ATTENTION_STATES, STATE_LABELS } from '@/lib/attention'
 import { formatDurationLong, formatLocalDateTime } from '@/lib/time'
-import type { ExportFormat, SessionRecord } from '@/types/app'
+import type {
+  AttentionState,
+  ExportFormat,
+  SessionRecord,
+  SessionStatus,
+} from '@/types/app'
 import { SectionCard } from './SectionCard'
 
 function describeSessionMix(session: SessionRecord) {
@@ -17,11 +23,17 @@ function describeSessionMix(session: SessionRecord) {
 export function HistoryPanel({
   recentSessions,
   exportBusy,
+  correctionBusySessionId,
+  sessionStatus,
   onExport,
+  onRetrospectiveCorrection,
 }: {
   recentSessions: SessionRecord[]
   exportBusy: boolean
+  correctionBusySessionId: string | null
+  sessionStatus: SessionStatus
   onExport: (format: ExportFormat) => void
+  onRetrospectiveCorrection: (sessionId: string, state: AttentionState) => void
 }) {
   const bestOnScreenSession = [...recentSessions].sort(
     (left, right) => right.totals.ON_SCREEN - left.totals.ON_SCREEN,
@@ -96,6 +108,20 @@ export function HistoryPanel({
                   <strong>{formatLocalDateTime(session.startedAt)}</strong>
                   <p>{formatLocalDateTime(session.endedAt)}</p>
                   <p className="helper-copy">{describeSessionMix(session)}</p>
+                  <div className="button-row">
+                    {ATTENTION_STATES.map((state) => (
+                      <button
+                        key={`${session.id}-${state}`}
+                        className="ghost-button"
+                        disabled={
+                          correctionBusySessionId !== null || sessionStatus !== 'IDLE'
+                        }
+                        onClick={() => onRetrospectiveCorrection(session.id, state)}
+                      >
+                        Mark {STATE_LABELS[state].toLowerCase()}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="history-row__stats">
                   <span>Total {formatDurationLong(session.elapsedMs)}</span>
@@ -112,6 +138,11 @@ export function HistoryPanel({
             No completed sessions yet. Finish a session to see local review data here.
           </div>
         )}
+
+        <p className="helper-copy">
+          Retrospective correction rewrites one completed session as a manual segment
+          and updates daily totals accordingly.
+        </p>
       </SectionCard>
     </div>
   )

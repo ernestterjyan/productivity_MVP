@@ -50,7 +50,7 @@ describe('browser storage client', () => {
     expect(reloaded.settings.webcamPreviewEnabled).toBe(true)
   })
 
-  it('drops abandoned active sessions during bootstrap cleanup', async () => {
+  it('returns an active session as recoverable during bootstrap', async () => {
     const client = createBrowserStorageClient()
     const startedAt = new Date('2026-03-15T12:00:00.000Z').toISOString()
     const session = await client.createSession(startedAt)
@@ -71,6 +71,8 @@ describe('browser storage client', () => {
     const bootstrapped = await createBrowserStorageClient().bootstrap()
 
     expect(bootstrapped.recentSessions).toHaveLength(0)
+    expect(bootstrapped.recoverableSession?.session.id).toBe(session.id)
+    expect(bootstrapped.recoverableSession?.segments).toHaveLength(1)
     expect(bootstrapped.todaySummary.trackedMs).toBe(0)
   })
 
@@ -229,5 +231,56 @@ describe('browser storage client', () => {
     expect(firstDay?.totals.ON_SCREEN).toBe(10 * 60 * 1000)
     expect(secondDay?.totals.ON_SCREEN).toBe(10 * 60 * 1000)
     expect((firstDay?.trackedMs ?? 0) + (secondDay?.trackedMs ?? 0)).toBe(durationMs)
+  })
+
+  it('applies retrospective correction to a completed session', async () => {
+    const client = createBrowserStorageClient()
+    const startedAt = new Date('2026-03-15T16:00:00.000Z').toISOString()
+    const endedAt = new Date('2026-03-15T16:20:00.000Z').toISOString()
+    const elapsedMs = 20 * 60 * 1000
+    const session = await client.createSession(startedAt)
+
+    await client.appendStateSegment({
+      id: 'segment-before-correction',
+      sessionId: session.id,
+      state: 'ON_SCREEN',
+      startedAt,
+      endedAt,
+      durationMs: elapsedMs,
+      confidence: 0.8,
+      reason: 'Original inference segment.',
+      source: 'INFERENCE',
+      manualNote: null,
+    })
+    await client.finishSession({
+      sessionId: session.id,
+      endedAt,
+      elapsedMs,
+      totals: {
+        ON_SCREEN: elapsedMs,
+        DESK_WORK: 0,
+        AWAY: 0,
+        UNCERTAIN: 0,
+      },
+    })
+
+    const corrected = await client.correctSession({
+      sessionId: session.id,
+      state: 'DESK_WORK',
+      note: 'Retrospective correction test.',
+    })
+    const correctedSession = corrected.recentSessions.find(
+      (entry) => entry.id === session.id,
+    )
+    const exported = await client.exportData()
+    const correctedSegments = exported.stateSegments.filter(
+      (segment) => segment.sessionId === session.id,
+    )
+
+    expect(correctedSession?.totals.DESK_WORK).toBe(elapsedMs)
+    expect(correctedSession?.totals.ON_SCREEN).toBe(0)
+    expect(correctedSegments).toHaveLength(1)
+    expect(correctedSegments[0]?.source).toBe('MANUAL')
+    expect(correctedSegments[0]?.manualNote).toContain('Retrospective correction')
   })
 })

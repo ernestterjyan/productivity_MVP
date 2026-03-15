@@ -3,6 +3,7 @@ import type {
   BootstrapPayload,
   ExportBundle,
   PersistedSegmentInput,
+  SessionCorrectionInput,
   SessionCompletionInput,
   SessionSeed,
 } from '@/types/app'
@@ -15,6 +16,7 @@ export interface StorageClient {
   createSession(startedAt: string): Promise<SessionSeed>
   appendStateSegment(segment: PersistedSegmentInput): Promise<void>
   finishSession(payload: SessionCompletionInput): Promise<BootstrapPayload>
+  correctSession(payload: SessionCorrectionInput): Promise<BootstrapPayload>
   deleteSession(sessionId: string): Promise<BootstrapPayload>
   saveSettings(settings: AppSettings): Promise<BootstrapPayload>
   exportData(): Promise<ExportBundle>

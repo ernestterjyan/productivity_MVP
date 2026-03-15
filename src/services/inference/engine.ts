@@ -19,11 +19,20 @@ function evaluateCandidate(
   webcam: WebcamSignals,
   activity: ActivitySignals,
   config: InferenceConfig,
+  now: number,
 ): CandidateState {
+  const interactionAtMs = activity.lastInteractionAt
+    ? Date.parse(activity.lastInteractionAt)
+    : Number.NaN
+  const interactionWithinAwayGrace =
+    Number.isFinite(interactionAtMs) &&
+    now - interactionAtMs <= config.awayInputGraceMs
   const strongScreenFacing = webcam.screenFacingScore >= config.screenFacingThreshold
   const clearlyTurnedAway = webcam.screenFacingScore <= config.faceAwayThreshold
   const awayCandidate =
-    !webcam.faceDetected && webcam.noFaceDurationMs >= config.awayTimeoutMs
+    !webcam.faceDetected &&
+    webcam.noFaceDurationMs >= config.awayTimeoutMs &&
+    !interactionWithinAwayGrace
   const deskWorkCandidate =
     webcam.headDownScore >= config.headDownThreshold &&
     webcam.screenFacingScore <= config.deskWorkScreenFacingUpperBound &&
@@ -59,8 +68,10 @@ function evaluateCandidate(
     return {
       state: 'UNCERTAIN',
       confidence: activity.recentInteraction ? 0.42 : 0.3,
-      reason: activity.recentInteraction
-        ? 'Input resumed without a stable face signal.'
+      reason: interactionWithinAwayGrace
+        ? 'Face signal is absent but recent input is within away grace time.'
+        : activity.recentInteraction
+          ? 'Input resumed without a stable face signal.'
         : 'Waiting for a stable face signal.',
       flags,
     }
@@ -148,7 +159,7 @@ export class AttentionInferenceEngine {
     config: InferenceConfig,
     now = Date.now(),
   ): InferenceSnapshot {
-    const candidate = evaluateCandidate(webcam, activity, config)
+    const candidate = evaluateCandidate(webcam, activity, config, now)
     const pendingDuration =
       this.pendingState === candidate.state ? now - this.pendingSince : 0
     const requiredHoldMs = config.minimumHoldMs[candidate.state]
