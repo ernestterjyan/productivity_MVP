@@ -29,10 +29,10 @@ describe('browser storage client', () => {
       endedAt: new Date('2026-03-15T10:25:00.000Z').toISOString(),
       elapsedMs: 25 * 60 * 1000,
       totals: {
-        ON_SCREEN: 20 * 60 * 1000,
-        DESK_WORK: 3 * 60 * 1000,
-        AWAY: 60 * 1000,
-        UNCERTAIN: 60 * 1000,
+        ON_SCREEN: 25 * 60 * 1000,
+        DESK_WORK: 0,
+        AWAY: 0,
+        UNCERTAIN: 0,
       },
     })
 
@@ -45,8 +45,8 @@ describe('browser storage client', () => {
     )
 
     expect(todaySummary?.trackedMs).toBe(25 * 60 * 1000)
-    expect(todaySummary?.totals.ON_SCREEN).toBe(20 * 60 * 1000)
-    expect(todaySummary?.totals.DESK_WORK).toBe(3 * 60 * 1000)
+    expect(todaySummary?.totals.ON_SCREEN).toBe(25 * 60 * 1000)
+    expect(todaySummary?.totals.DESK_WORK).toBe(0)
     expect(reloaded.settings.webcamPreviewEnabled).toBe(true)
   })
 
@@ -178,5 +178,56 @@ describe('browser storage client', () => {
     expect(bootstrapped.recentSessions[0]?.totals.DESK_WORK).toBe(420_000)
     expect(bootstrapped.settings.deskWorkSensitivity).toBe(70)
     expect(bootstrapped.settings.deskWorkSustainMs).toBe(3100)
+  })
+
+  it('splits a segment across local day boundaries in daily summaries', async () => {
+    const client = createBrowserStorageClient()
+    const start = new Date()
+    start.setHours(23, 50, 0, 0)
+    const end = new Date(start)
+    end.setDate(start.getDate() + 1)
+    end.setHours(0, 10, 0, 0)
+
+    const startedAt = start.toISOString()
+    const endedAt = end.toISOString()
+    const durationMs = Date.parse(endedAt) - Date.parse(startedAt)
+    const session = await client.createSession(startedAt)
+
+    await client.appendStateSegment({
+      id: 'cross-midnight-segment',
+      sessionId: session.id,
+      state: 'ON_SCREEN',
+      startedAt,
+      endedAt,
+      durationMs,
+      confidence: 0.9,
+      reason: 'Cross-midnight regression test segment.',
+      source: 'INFERENCE',
+      manualNote: null,
+    })
+
+    await client.finishSession({
+      sessionId: session.id,
+      endedAt,
+      elapsedMs: durationMs,
+      totals: {
+        ON_SCREEN: durationMs,
+        DESK_WORK: 0,
+        AWAY: 0,
+        UNCERTAIN: 0,
+      },
+    })
+
+    const bootstrapped = await createBrowserStorageClient().bootstrap()
+    const firstDay = bootstrapped.dailyHistory.find(
+      (summary) => summary.date === toDateKey(start),
+    )
+    const secondDay = bootstrapped.dailyHistory.find(
+      (summary) => summary.date === toDateKey(end),
+    )
+
+    expect(firstDay?.totals.ON_SCREEN).toBe(10 * 60 * 1000)
+    expect(secondDay?.totals.ON_SCREEN).toBe(10 * 60 * 1000)
+    expect((firstDay?.trackedMs ?? 0) + (secondDay?.trackedMs ?? 0)).toBe(durationMs)
   })
 })

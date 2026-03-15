@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{DateTime, Duration, Local, LocalResult, NaiveDateTime, TimeZone, Utc};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
@@ -406,30 +406,74 @@ impl Database {
     fn rebuild_daily_summaries(&mut self) -> Result<()> {
         self.connection.execute("DELETE FROM daily_summaries", [])?;
 
-        let mut statement = self.connection.prepare(
+        let mut segment_statement = self.connection.prepare(
             r#"
-            SELECT started_at, on_screen_ms, writing_ms, away_ms, uncertain_ms
-            FROM sessions
-            WHERE status = 'COMPLETED'
+            SELECT
+              state_segments.session_id,
+              state_segments.state,
+              state_segments.started_at,
+              state_segments.ended_at,
+              state_segments.duration_ms
+            FROM state_segments
+            INNER JOIN sessions ON sessions.id = state_segments.session_id
+            WHERE sessions.status = 'COMPLETED'
+            ORDER BY state_segments.started_at ASC
             "#,
         )?;
 
-        let session_rows = statement.query_map([], |row| {
+        let segment_rows = segment_statement.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                StateTotals {
-                    on_screen: row.get(1)?,
-                    desk_work: row.get(2)?,
-                    away: row.get(3)?,
-                    uncertain: row.get(4)?,
-                },
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
             ))
         })?;
 
         let mut buckets: BTreeMap<String, StateTotals> = BTreeMap::new();
+        let mut sessions_with_segments = HashSet::<String>::new();
+
+        for row in segment_rows {
+            let (session_id, state, started_at, ended_at, duration_ms) = row?;
+            sessions_with_segments.insert(session_id);
+
+            for (date, split_duration_ms) in
+                split_segment_by_local_day(&started_at, &ended_at, duration_ms)
+            {
+                let entry = buckets.entry(date).or_insert_with(StateTotals::empty);
+                add_state_duration(entry, &state, split_duration_ms);
+            }
+        }
+
+        // Legacy fallback for sessions that have totals but no segment rows.
+        let mut session_statement = self.connection.prepare(
+            r#"
+            SELECT id, started_at, on_screen_ms, writing_ms, away_ms, uncertain_ms
+            FROM sessions
+            WHERE status = 'COMPLETED'
+            "#,
+        )?;
+        let session_rows = session_statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                StateTotals {
+                    on_screen: row.get(2)?,
+                    desk_work: row.get(3)?,
+                    away: row.get(4)?,
+                    uncertain: row.get(5)?,
+                },
+            ))
+        })?;
 
         for row in session_rows {
-            let (started_at, totals) = row?;
+            let (session_id, started_at, totals) = row?;
+
+            if sessions_with_segments.contains(&session_id) {
+                continue;
+            }
+
             let date = date_key_for_iso(&started_at);
             let entry = buckets.entry(date).or_insert_with(StateTotals::empty);
             entry.on_screen += totals.on_screen;
@@ -515,10 +559,150 @@ fn date_key_for_iso(iso: &str) -> String {
         .unwrap_or_else(|_| iso.chars().take(10).collect())
 }
 
+fn date_key_for_millis(timestamp_ms: i64) -> Option<String> {
+    DateTime::<Utc>::from_timestamp_millis(timestamp_ms)
+        .map(|date| date.with_timezone(&Local).format("%Y-%m-%d").to_string())
+}
+
+fn resolve_local_datetime(naive: NaiveDateTime) -> Option<DateTime<Local>> {
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(date) => Some(date),
+        LocalResult::Ambiguous(first, _) => Some(first),
+        LocalResult::None => {
+            let mut probe = naive;
+
+            for _ in 0..6 {
+                probe += Duration::hours(1);
+                match Local.from_local_datetime(&probe) {
+                    LocalResult::Single(date) => return Some(date),
+                    LocalResult::Ambiguous(first, _) => return Some(first),
+                    LocalResult::None => {}
+                }
+            }
+
+            None
+        }
+    }
+}
+
+fn next_local_day_start_millis(timestamp_ms: i64) -> Option<i64> {
+    let local = DateTime::<Utc>::from_timestamp_millis(timestamp_ms)?.with_timezone(&Local);
+    let next_date = local.date_naive().succ_opt()?;
+    let midnight = next_date.and_hms_opt(0, 0, 0)?;
+    let resolved = resolve_local_datetime(midnight)?;
+    Some(resolved.with_timezone(&Utc).timestamp_millis())
+}
+
+fn split_segment_by_local_day(
+    started_at: &str,
+    ended_at: &str,
+    fallback_duration_ms: i64,
+) -> Vec<(String, i64)> {
+    let started = DateTime::parse_from_rfc3339(started_at);
+    let ended = DateTime::parse_from_rfc3339(ended_at);
+
+    let (started_ms, ended_ms) = match (started, ended) {
+        (Ok(valid_start), Ok(valid_end))
+            if valid_end.timestamp_millis() > valid_start.timestamp_millis() =>
+        {
+            (valid_start.timestamp_millis(), valid_end.timestamp_millis())
+        }
+        _ => {
+            return vec![(
+                date_key_for_iso(started_at),
+                std::cmp::max(0, fallback_duration_ms),
+            )]
+        }
+    };
+
+    let mut slices: Vec<(String, i64)> = Vec::new();
+    let mut cursor_ms = started_ms;
+
+    while cursor_ms < ended_ms {
+        let boundary_ms = next_local_day_start_millis(cursor_ms).unwrap_or(ended_ms);
+        let slice_end_ms = std::cmp::min(ended_ms, boundary_ms);
+        let duration_ms = std::cmp::max(0, slice_end_ms - cursor_ms);
+
+        if duration_ms > 0 {
+            let date = date_key_for_millis(cursor_ms)
+                .unwrap_or_else(|| date_key_for_iso(started_at));
+            slices.push((date, duration_ms));
+        }
+
+        if slice_end_ms <= cursor_ms {
+            break;
+        }
+
+        cursor_ms = slice_end_ms;
+    }
+
+    if slices.is_empty() {
+        vec![(
+            date_key_for_iso(started_at),
+            std::cmp::max(0, fallback_duration_ms),
+        )]
+    } else {
+        slices
+    }
+}
+
+fn add_state_duration(totals: &mut StateTotals, state: &str, duration_ms: i64) {
+    let safe_duration = std::cmp::max(0, duration_ms);
+
+    if safe_duration <= 0 {
+        return;
+    }
+
+    match normalize_state_name(state).as_str() {
+        "ON_SCREEN" => totals.on_screen += safe_duration,
+        "DESK_WORK" => totals.desk_work += safe_duration,
+        "AWAY" => totals.away += safe_duration,
+        "UNCERTAIN" => totals.uncertain += safe_duration,
+        _ => {}
+    }
+}
+
 fn normalize_state_name(state: &str) -> String {
     if state == "WRITING" {
         "DESK_WORK".to_string()
     } else {
         state.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_local_datetime, split_segment_by_local_day};
+    use chrono::Local;
+
+    #[test]
+    fn splits_segment_across_two_local_days() {
+        let date = Local::now().date_naive();
+        let start_naive = date.and_hms_opt(23, 50, 0).expect("valid start");
+        let end_naive = date
+            .succ_opt()
+            .expect("next day exists")
+            .and_hms_opt(0, 10, 0)
+            .expect("valid end");
+        let started_at = resolve_local_datetime(start_naive)
+            .expect("resolves to local datetime")
+            .to_rfc3339();
+        let ended_at = resolve_local_datetime(end_naive)
+            .expect("resolves to local datetime")
+            .to_rfc3339();
+
+        let slices = split_segment_by_local_day(&started_at, &ended_at, 20 * 60 * 1000);
+
+        assert_eq!(slices.len(), 2);
+        assert_eq!(slices[0].1, 10 * 60 * 1000);
+        assert_eq!(slices[1].1, 10 * 60 * 1000);
+    }
+
+    #[test]
+    fn uses_fallback_when_timestamps_are_invalid() {
+        let slices = split_segment_by_local_day("invalid", "invalid", 30_000);
+
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].1, 30_000);
     }
 }

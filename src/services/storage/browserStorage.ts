@@ -153,11 +153,116 @@ function mergeTotals(target: StateTotals, next: StateTotals) {
   target.UNCERTAIN += next.UNCERTAIN
 }
 
+function addStateDuration(
+  totals: StateTotals,
+  state: AttentionState,
+  durationMs: number,
+) {
+  const safeDuration = Math.max(0, Math.round(durationMs))
+
+  if (safeDuration <= 0) {
+    return
+  }
+
+  if (state === 'ON_SCREEN') {
+    totals.ON_SCREEN += safeDuration
+    return
+  }
+
+  if (state === 'DESK_WORK') {
+    totals.DESK_WORK += safeDuration
+    return
+  }
+
+  if (state === 'AWAY') {
+    totals.AWAY += safeDuration
+    return
+  }
+
+  if (state === 'UNCERTAIN') {
+    totals.UNCERTAIN += safeDuration
+  }
+}
+
+function nextLocalDayStartMs(timestampMs: number) {
+  const next = new Date(timestampMs)
+  next.setHours(24, 0, 0, 0)
+  return next.getTime()
+}
+
+function splitSegmentByDate(
+  startedAt: string,
+  endedAt: string,
+  fallbackDurationMs: number,
+) {
+  const startedMs = Date.parse(startedAt)
+  const endedMs = Date.parse(endedAt)
+
+  if (!Number.isFinite(startedMs) || !Number.isFinite(endedMs) || endedMs <= startedMs) {
+    return [
+      {
+        date: toDateKey(startedAt),
+        durationMs: Math.max(0, Math.round(fallbackDurationMs)),
+      },
+    ]
+  }
+
+  const slices: Array<{ date: string; durationMs: number }> = []
+  let cursorMs = startedMs
+
+  while (cursorMs < endedMs) {
+    const boundaryMs = nextLocalDayStartMs(cursorMs)
+    const sliceEndMs = Math.min(endedMs, boundaryMs)
+    const durationMs = Math.max(0, sliceEndMs - cursorMs)
+
+    if (durationMs > 0) {
+      slices.push({
+        date: toDateKey(cursorMs),
+        durationMs,
+      })
+    }
+
+    if (sliceEndMs <= cursorMs) {
+      break
+    }
+
+    cursorMs = sliceEndMs
+  }
+
+  return slices
+}
+
 function rebuildDailySummaries(store: BrowserStore) {
   const buckets = new Map<string, StateTotals>()
+  const completedSessions = store.sessions.filter(
+    (session) => session.status === 'COMPLETED',
+  )
+  const completedSessionIds = new Set(completedSessions.map((session) => session.id))
+  const sessionsWithSegments = new Set<string>()
 
-  for (const session of store.sessions) {
-    if (session.status !== 'COMPLETED') {
+  for (const segment of store.segments) {
+    if (!completedSessionIds.has(segment.sessionId)) {
+      continue
+    }
+
+    sessionsWithSegments.add(segment.sessionId)
+
+    const slices = splitSegmentByDate(
+      segment.startedAt,
+      segment.endedAt,
+      segment.durationMs,
+    )
+
+    for (const slice of slices) {
+      const totals = buckets.get(slice.date) ?? createEmptyTotals()
+      addStateDuration(totals, segment.state, slice.durationMs)
+      buckets.set(slice.date, totals)
+    }
+  }
+
+  // Legacy fallback for sessions that have totals but no segment rows.
+  for (const session of completedSessions) {
+    if (sessionsWithSegments.has(session.id)) {
       continue
     }
 
