@@ -7,8 +7,9 @@ use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 use crate::models::{
-    empty_daily_summary, AppSettings, BootstrapPayload, DailySummary, PersistedSegmentInput,
-    SessionCompletionInput, SessionRecord, SessionRecordStatus, SessionSeed, StateTotals,
+    empty_daily_summary, AppSettings, BootstrapPayload, DailySummary, ExportBundle,
+    PersistedSegmentInput, SessionCompletionInput, SessionRecord, SessionRecordStatus, SessionSeed,
+    StateTotals,
 };
 
 pub struct Database {
@@ -93,18 +94,22 @@ impl Database {
               duration_ms,
               confidence,
               reason,
+              source,
+              manual_note,
               created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             "#,
             params![
                 segment.id,
                 segment.session_id,
-                segment.state,
+                normalize_state_name(&segment.state),
                 segment.started_at,
                 segment.ended_at,
                 segment.duration_ms,
                 segment.confidence,
                 segment.reason,
+                segment.source,
+                segment.manual_note,
                 now_iso(),
             ],
         )?;
@@ -129,7 +134,7 @@ impl Database {
                 payload.ended_at,
                 payload.elapsed_ms,
                 payload.totals.on_screen,
-                payload.totals.writing,
+                payload.totals.desk_work,
                 payload.totals.away,
                 payload.totals.uncertain,
                 payload.session_id,
@@ -137,6 +142,23 @@ impl Database {
         )?;
         self.rebuild_daily_summaries()?;
         self.bootstrap()
+    }
+
+    pub fn export_data(&mut self) -> Result<ExportBundle> {
+        let settings = self.read_settings()?;
+
+        if settings.retention_enabled {
+            self.prune_old_data(settings.retention_days)?;
+            self.rebuild_daily_summaries()?;
+        }
+
+        Ok(ExportBundle {
+            exported_at: now_iso(),
+            settings,
+            sessions: self.read_all_sessions()?,
+            state_segments: self.read_all_segments()?,
+            daily_summaries: self.read_daily_summaries()?,
+        })
     }
 
     pub fn delete_session(&mut self, session_id: String) -> Result<BootstrapPayload> {
@@ -196,6 +218,8 @@ impl Database {
               duration_ms INTEGER NOT NULL,
               confidence REAL NOT NULL,
               reason TEXT NOT NULL,
+              source TEXT NOT NULL DEFAULT 'INFERENCE',
+              manual_note TEXT,
               created_at TEXT NOT NULL,
               FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
@@ -220,6 +244,12 @@ impl Database {
             CREATE INDEX IF NOT EXISTS segments_session_id_idx ON state_segments(session_id);
             "#,
         )?;
+        self.ensure_column(
+            "state_segments",
+            "source",
+            "TEXT NOT NULL DEFAULT 'INFERENCE'",
+        )?;
+        self.ensure_column("state_segments", "manual_note", "TEXT")?;
 
         Ok(())
     }
@@ -257,7 +287,15 @@ impl Database {
     }
 
     fn read_recent_sessions(&self) -> Result<Vec<SessionRecord>> {
-        let mut statement = self.connection.prepare(
+        self.read_sessions("LIMIT 12")
+    }
+
+    fn read_all_sessions(&self) -> Result<Vec<SessionRecord>> {
+        self.read_sessions("")
+    }
+
+    fn read_sessions(&self, limit_clause: &str) -> Result<Vec<SessionRecord>> {
+        let mut statement = self.connection.prepare(&format!(
             r#"
             SELECT
               id,
@@ -272,9 +310,10 @@ impl Database {
             FROM sessions
             WHERE status = 'COMPLETED'
             ORDER BY started_at DESC
-            LIMIT 12
+            {}
             "#,
-        )?;
+            limit_clause
+        ))?;
 
         let rows = statement.query_map([], |row| {
             let status: String = row.get(8)?;
@@ -285,7 +324,7 @@ impl Database {
                 elapsed_ms: row.get(3)?,
                 totals: StateTotals {
                     on_screen: row.get(4)?,
-                    writing: row.get(5)?,
+                    desk_work: row.get(5)?,
                     away: row.get(6)?,
                     uncertain: row.get(7)?,
                 },
@@ -294,6 +333,44 @@ impl Database {
                 } else {
                     SessionRecordStatus::Completed
                 },
+            })
+        })?;
+
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn read_all_segments(&self) -> Result<Vec<PersistedSegmentInput>> {
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT
+              id,
+              session_id,
+              state,
+              started_at,
+              ended_at,
+              duration_ms,
+              confidence,
+              reason,
+              source,
+              manual_note
+            FROM state_segments
+            ORDER BY started_at ASC
+            "#,
+        )?;
+
+        let rows = statement.query_map([], |row| {
+            let raw_state: String = row.get(2)?;
+            Ok(PersistedSegmentInput {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                state: normalize_state_name(&raw_state),
+                started_at: row.get(3)?,
+                ended_at: row.get(4)?,
+                duration_ms: row.get(5)?,
+                confidence: row.get(6)?,
+                reason: row.get(7)?,
+                source: row.get(8)?,
+                manual_note: row.get(9)?,
             })
         })?;
 
@@ -316,7 +393,7 @@ impl Database {
                 tracked_ms: row.get(1)?,
                 totals: StateTotals {
                     on_screen: row.get(2)?,
-                    writing: row.get(3)?,
+                    desk_work: row.get(3)?,
                     away: row.get(4)?,
                     uncertain: row.get(5)?,
                 },
@@ -342,7 +419,7 @@ impl Database {
                 row.get::<_, String>(0)?,
                 StateTotals {
                     on_screen: row.get(1)?,
-                    writing: row.get(2)?,
+                    desk_work: row.get(2)?,
                     away: row.get(3)?,
                     uncertain: row.get(4)?,
                 },
@@ -356,7 +433,7 @@ impl Database {
             let date = date_key_for_iso(&started_at);
             let entry = buckets.entry(date).or_insert_with(StateTotals::empty);
             entry.on_screen += totals.on_screen;
-            entry.writing += totals.writing;
+            entry.desk_work += totals.desk_work;
             entry.away += totals.away;
             entry.uncertain += totals.uncertain;
         }
@@ -378,7 +455,7 @@ impl Database {
                     date,
                     totals.tracked_ms(),
                     totals.on_screen,
-                    totals.writing,
+                    totals.desk_work,
                     totals.away,
                     totals.uncertain,
                     now_iso(),
@@ -396,8 +473,30 @@ impl Database {
             "DELETE FROM state_segments WHERE session_id IN (SELECT id FROM sessions WHERE started_at < ?1)",
             params![cutoff.clone()],
         )?;
-        self.connection
-            .execute("DELETE FROM sessions WHERE started_at < ?1", params![cutoff])?;
+        self.connection.execute(
+            "DELETE FROM sessions WHERE started_at < ?1",
+            params![cutoff],
+        )?;
+        Ok(())
+    }
+
+    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<()> {
+        let mut statement = self
+            .connection
+            .prepare(&format!("PRAGMA table_info({})", table))?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+        let exists = columns
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .any(|existing| existing == column);
+
+        if !exists {
+            self.connection.execute(
+                &format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, definition),
+                [],
+            )?;
+        }
+
         Ok(())
     }
 }
@@ -414,4 +513,12 @@ fn date_key_for_iso(iso: &str) -> String {
     DateTime::parse_from_rfc3339(iso)
         .map(|date| date.with_timezone(&Local).format("%Y-%m-%d").to_string())
         .unwrap_or_else(|_| iso.chars().take(10).collect())
+}
+
+fn normalize_state_name(state: &str) -> String {
+    if state == "WRITING" {
+        "DESK_WORK".to_string()
+    } else {
+        state.to_string()
+    }
 }

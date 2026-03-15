@@ -1,6 +1,7 @@
 import type {
   AppSettings,
   BootstrapPayload,
+  ExportBundle,
   PersistedSegmentInput,
   SessionCompletionInput,
   SessionSeed,
@@ -16,6 +17,7 @@ export interface StorageClient {
   finishSession(payload: SessionCompletionInput): Promise<BootstrapPayload>
   deleteSession(sessionId: string): Promise<BootstrapPayload>
   saveSettings(settings: AppSettings): Promise<BootstrapPayload>
+  exportData(): Promise<ExportBundle>
 }
 
 let client: StorageClient | null = null

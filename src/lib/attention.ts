@@ -3,21 +3,21 @@ import { toDateKey } from './time'
 
 export const ATTENTION_STATES: AttentionState[] = [
   'ON_SCREEN',
-  'WRITING',
+  'DESK_WORK',
   'AWAY',
   'UNCERTAIN',
 ]
 
 export const STATE_LABELS: Record<AttentionState, string> = {
   ON_SCREEN: 'On screen',
-  WRITING: 'Writing',
+  DESK_WORK: 'Desk work',
   AWAY: 'Away',
   UNCERTAIN: 'Uncertain',
 }
 
 export const STATE_TINTS: Record<AttentionState, string> = {
   ON_SCREEN: '#2c7a66',
-  WRITING: '#d29034',
+  DESK_WORK: '#d29034',
   AWAY: '#c25f52',
   UNCERTAIN: '#73808e',
 }
@@ -25,7 +25,7 @@ export const STATE_TINTS: Record<AttentionState, string> = {
 export function createEmptyTotals(): StateTotals {
   return {
     ON_SCREEN: 0,
-    WRITING: 0,
+    DESK_WORK: 0,
     AWAY: 0,
     UNCERTAIN: 0,
   }
@@ -46,7 +46,7 @@ export function addToTotals(
 export function cloneTotals(totals: StateTotals): StateTotals {
   return {
     ON_SCREEN: totals.ON_SCREEN,
-    WRITING: totals.WRITING,
+    DESK_WORK: totals.DESK_WORK,
     AWAY: totals.AWAY,
     UNCERTAIN: totals.UNCERTAIN,
   }

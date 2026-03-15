@@ -9,7 +9,8 @@ use tauri::{Manager, State};
 
 use crate::database::Database;
 use crate::models::{
-    AppSettings, BootstrapPayload, PersistedSegmentInput, SessionCompletionInput, SessionSeed,
+    AppSettings, BootstrapPayload, ExportBundle, PersistedSegmentInput, SessionCompletionInput,
+    SessionSeed,
 };
 
 struct AppState {
@@ -91,31 +92,42 @@ fn save_settings(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn export_data(state: State<'_, AppState>) -> std::result::Result<ExportBundle, String> {
+    state
+        .database
+        .lock()
+        .map_err(|_| "database lock poisoned".to_string())?
+        .export_data()
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  tauri::Builder::default()
-    .setup(|app| {
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
-      }
+    tauri::Builder::default()
+        .setup(|app| {
+            if cfg!(debug_assertions) {
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                )?;
+            }
 
-      initialize_database(app)?;
-      Ok(())
-    })
-    .invoke_handler(tauri::generate_handler![
-      bootstrap,
-      create_session,
-      append_state_segment,
-      finish_session,
-      delete_session,
-      save_settings
-    ])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+            initialize_database(app)?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            bootstrap,
+            create_session,
+            append_state_segment,
+            finish_session,
+            delete_session,
+            save_settings,
+            export_data
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
 
 fn initialize_database(app: &mut tauri::App) -> AnyResult<()> {

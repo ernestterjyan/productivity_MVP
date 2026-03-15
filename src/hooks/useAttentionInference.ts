@@ -29,6 +29,7 @@ export function useAttentionInference({
 
   useEffect(() => {
     let cancelled = false
+    const config = toInferenceConfig(settings)
     const observedAt =
       webcam.lastUpdatedAt ??
       activity.lastInteractionAt ??
@@ -43,12 +44,30 @@ export function useAttentionInference({
             webcam,
             activity,
             reason: 'Tracking is paused.',
+            transitionReason: 'Tracking is paused.',
+            debug: {
+              ...DEFAULT_INFERENCE_SNAPSHOT.debug,
+              calibrationActive: config.calibrationActive,
+              thresholds: {
+                awayTimeoutMs: config.awayTimeoutMs,
+                screenFacingThreshold: config.screenFacingThreshold,
+                faceAwayThreshold: config.faceAwayThreshold,
+                headDownThreshold: config.headDownThreshold,
+                deskWorkScreenFacingUpperBound: config.deskWorkScreenFacingUpperBound,
+                deskWorkSustainMs: config.deskWorkSustainMs,
+                transitionCooldownMs: config.transitionCooldownMs,
+                recentInteractionMs: config.recentInteractionMs,
+                activityWindowMs: config.activityWindowMs,
+                awayInputGraceMs: config.awayInputGraceMs,
+                minimumHoldMs: config.minimumHoldMs,
+              },
+            },
           }
         })()
       : engineRef.current.update(
           webcam,
           activity,
-          toInferenceConfig(settings),
+          config,
           Number.isFinite(observedMs) ? observedMs : 0,
         )
 

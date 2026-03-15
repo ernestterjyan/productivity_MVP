@@ -459,6 +459,12 @@ button {
   color: #667b74;
 }
 
+.history-stack,
+.settings-stack {
+  display: grid;
+  gap: 18px;
+}
+
 .segment-row__meta,
 .history-row__stats {
   display: grid;
@@ -502,6 +508,86 @@ button {
   width: 100%;
 }
 
+.manual-controls {
+  display: grid;
+  gap: 12px;
+}
+
+.manual-controls__label {
+  margin: 0;
+  color: #648078;
+  font-size: 0.88rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.manual-override-banner {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(210, 144, 52, 0.12);
+  border: 1px solid rgba(210, 144, 52, 0.18);
+}
+
+.overlay-shell {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(16, 27, 24, 0.4);
+  backdrop-filter: blur(10px);
+  z-index: 40;
+}
+
+.overlay-card {
+  width: min(1080px, calc(100vw - 32px));
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 24px;
+  border-radius: 30px;
+  border: 1px solid rgba(23, 49, 44, 0.12);
+  background: rgba(248, 249, 244, 0.96);
+  box-shadow: 0 24px 70px rgba(18, 34, 29, 0.22);
+}
+
+.overlay-card__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.overlay-card__header h2 {
+  margin: 0;
+  font-size: 1.6rem;
+  letter-spacing: -0.03em;
+}
+
+.calibration-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 18px;
+}
+
+.calibration-stage {
+  min-height: 360px;
+}
+
+.calibration-copy {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.compact-empty {
+  min-height: 120px;
+}
+
 @media (max-width: 1080px) {
   .session-card,
   .webcam-card,
@@ -516,6 +602,16 @@ button {
 
   .top-bar__meta {
     justify-items: start;
+  }
+
+  .calibration-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .manual-override-banner,
+  .overlay-card__header {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 

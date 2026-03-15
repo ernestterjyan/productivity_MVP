@@ -14,6 +14,7 @@ interface WebcamPanelProps {
   activity: ActivitySignals
   previewEnabled: boolean
   sessionStatus: SessionStatus
+  calibrationActive: boolean
 }
 
 export function WebcamPanel({
@@ -22,6 +23,7 @@ export function WebcamPanel({
   activity,
   previewEnabled,
   sessionStatus,
+  calibrationActive,
 }: WebcamPanelProps) {
   return (
     <SectionCard
@@ -45,9 +47,15 @@ export function WebcamPanel({
           </div>
         ) : null}
 
-        {sessionStatus === 'IDLE' ? (
+        {sessionStatus === 'IDLE' && !calibrationActive ? (
           <div className="webcam-overlay">
             Start a session to enable the camera and real-time inference.
+          </div>
+        ) : null}
+
+        {calibrationActive ? (
+          <div className="webcam-overlay">
+            Calibration is using the local camera feed. No session data is being recorded.
           </div>
         ) : null}
       </div>

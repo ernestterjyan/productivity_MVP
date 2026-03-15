@@ -43,7 +43,7 @@ export function StatsPanel({
       day: formatDayLabel(summary.date),
       tracked: Math.round(summary.trackedMs / 60000),
       focus: Math.round(summary.totals.ON_SCREEN / 60000),
-      writing: Math.round(summary.totals.WRITING / 60000),
+      deskWork: Math.round(summary.totals.DESK_WORK / 60000),
     }))
 
   return (
@@ -62,8 +62,8 @@ export function StatsPanel({
           <strong>{formatDurationLong(todaySummary.totals.ON_SCREEN)}</strong>
         </article>
         <article className="metric-tile">
-          <span>Today writing</span>
-          <strong>{formatDurationLong(todaySummary.totals.WRITING)}</strong>
+          <span>Today desk work</span>
+          <strong>{formatDurationLong(todaySummary.totals.DESK_WORK)}</strong>
         </article>
         <article className="metric-tile">
           <span>Today away</span>

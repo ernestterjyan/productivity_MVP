@@ -45,8 +45,14 @@ export function TimelinePanel({
               {currentSession.segments.slice(-6).reverse().map((segment) => (
                 <article key={segment.id} className="segment-row">
                   <div>
-                    <strong>{STATE_LABELS[segment.state]}</strong>
+                    <strong>
+                      {STATE_LABELS[segment.state]}
+                      {segment.source === 'MANUAL' ? ' · manual' : ''}
+                    </strong>
                     <p>{segment.reason}</p>
+                    {segment.manualNote ? (
+                      <p className="helper-copy">{segment.manualNote}</p>
+                    ) : null}
                   </div>
                   <div className="segment-row__meta">
                     <span>{formatDuration(segment.durationMs)}</span>

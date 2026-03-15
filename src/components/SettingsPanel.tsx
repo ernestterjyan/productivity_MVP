@@ -1,24 +1,35 @@
-import type { AppSettings } from '@/types/app'
+import { formatLocalDateTime } from '@/lib/time'
+import type { AppSettings, SessionStatus } from '@/types/app'
 import { SectionCard } from './SectionCard'
 
 interface SettingsPanelProps {
   settings: AppSettings
+  sessionStatus: SessionStatus
+  calibrationOpen: boolean
   onSettingChange: <Key extends keyof AppSettings>(
     key: Key,
     value: AppSettings[Key],
   ) => void
+  onOpenCalibration: () => void
+  onClearCalibration: () => void
 }
 
 export function SettingsPanel({
   settings,
+  sessionStatus,
+  calibrationOpen,
   onSettingChange,
+  onOpenCalibration,
+  onClearCalibration,
 }: SettingsPanelProps) {
+  const calibration = settings.calibrationProfile
+
   return (
-    <div className="wide-row">
+    <div className="wide-row settings-stack">
       <SectionCard
         className="settings-card"
         title="Settings"
-        subtitle="Tune thresholds, retention, and webcam preview behavior."
+        subtitle="Tune thresholds, retention, camera behavior, and the optional calibration profile."
       >
         <div className="settings-grid">
           <label className="field-toggle">
@@ -81,18 +92,18 @@ export function SettingsPanel({
           </label>
 
           <label className="field-control">
-            <span>Writing posture sensitivity</span>
+            <span>Desk-work posture sensitivity</span>
             <input
               max={90}
               min={20}
               onChange={(event) =>
-                onSettingChange('writingSensitivity', Number(event.target.value))
+                onSettingChange('deskWorkSensitivity', Number(event.target.value))
               }
               step={1}
               type="range"
-              value={settings.writingSensitivity}
+              value={settings.deskWorkSensitivity}
             />
-            <strong>{settings.writingSensitivity}%</strong>
+            <strong>{settings.deskWorkSensitivity}%</strong>
           </label>
 
           <label className="field-control">
@@ -126,18 +137,18 @@ export function SettingsPanel({
           </label>
 
           <label className="field-control">
-            <span>Writing sustain window</span>
+            <span>Desk-work sustain window</span>
             <input
               max={6000}
               min={1000}
               onChange={(event) =>
-                onSettingChange('writingSustainMs', Number(event.target.value))
+                onSettingChange('deskWorkSustainMs', Number(event.target.value))
               }
               step={200}
               type="range"
-              value={settings.writingSustainMs}
+              value={settings.deskWorkSustainMs}
             />
-            <strong>{Math.round(settings.writingSustainMs / 1000)} sec</strong>
+            <strong>{Math.round(settings.deskWorkSustainMs / 1000)} sec</strong>
           </label>
 
           <label className="field-control">
@@ -170,6 +181,64 @@ export function SettingsPanel({
             <strong>{settings.retentionDays} days</strong>
           </label>
         </div>
+      </SectionCard>
+
+      <SectionCard
+        className="settings-card"
+        title="Calibration"
+        subtitle="Optional per-user threshold tuning for screen-facing, desk-work posture, and away timing."
+        actions={
+          <div className="button-row">
+            <button
+              className="primary-button"
+              disabled={sessionStatus === 'RUNNING' || calibrationOpen}
+              onClick={onOpenCalibration}
+            >
+              {calibration ? 'Recalibrate' : 'Run calibration'}
+            </button>
+            {calibration ? (
+              <button className="ghost-button" onClick={onClearCalibration}>
+                Clear calibration
+              </button>
+            ) : null}
+          </div>
+        }
+      >
+        {calibration ? (
+          <div className="signal-grid compact">
+            <div className="signal-item">
+              <span>Last calibrated</span>
+              <strong>{formatLocalDateTime(calibration.calibratedAt)}</strong>
+            </div>
+            <div className="signal-item">
+              <span>Screen baseline</span>
+              <strong>{calibration.screenFacingBaseline.toFixed(2)}</strong>
+            </div>
+            <div className="signal-item">
+              <span>Desk-work head-down</span>
+              <strong>{calibration.deskWorkHeadDownBaseline.toFixed(2)}</strong>
+            </div>
+            <div className="signal-item">
+              <span>Away loss delay</span>
+              <strong>{Math.round(calibration.awayLossDelayMs / 1000)} sec</strong>
+            </div>
+          </div>
+        ) : (
+          <div className="empty-state compact-empty">
+            No calibration profile yet. The app will use generic defaults until
+            you run the optional flow.
+          </div>
+        )}
+
+        <p className="helper-copy">
+          Calibration improves threshold fit for your setup, but it does not turn webcam posture heuristics into a direct measure of concentration.
+        </p>
+
+        {sessionStatus === 'RUNNING' ? (
+          <p className="helper-copy">
+            Pause or stop the current session before recalibrating so the sample poses do not pollute live tracking.
+          </p>
+        ) : null}
       </SectionCard>
     </div>
   )

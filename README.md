@@ -2,66 +2,118 @@
 
 Focus Estimate is a local-first desktop study tracker built with Tauri 2, React, TypeScript, MediaPipe Tasks Vision, and SQLite.
 
-It estimates one of four attention states in real time:
+It estimates study behavior in real time using local webcam posture signals plus recent in-app input activity. It does not claim to measure true concentration or cognition.
+
+Current user-facing states:
 
 - `ON_SCREEN`
-- `WRITING`
+- `DESK_WORK`
 - `AWAY`
 - `UNCERTAIN`
 
-The app does not claim to measure true concentration. It combines practical signals such as webcam face presence, rough head orientation, head-down posture, and recent in-app input activity to produce a study behavior estimate.
-
-## What It Does
+## What The App Does
 
 - Runs as a desktop app via Tauri 2
-- Shows a live webcam preview with a visible camera status indicator
-- Tracks current session time by state
-- Uses local webcam landmark inference to estimate:
+- Shows a live webcam preview with a clear camera status indicator
+- Tracks session time by estimated state
+- Uses local webcam inference to estimate:
   - face present / absent
-  - facing the screen / turned away
-  - head-down posture consistent with writing
+  - roughly facing the screen / turned away
+  - head-down posture consistent with desk work, note-taking, or reading
 - Tracks in-app keyboard and pointer activity
-- Smooths noisy state changes with hold times and transition cooldowns
+- Applies smoothing, hold times, and cooldowns to reduce noisy state flapping
 - Persists sessions, state segments, daily summaries, and settings locally
-- Shows daily stats, a session timeline, and session history
-- Includes an optional debug mode for raw signal inspection and threshold tuning
-- Lets the user pause, resume, stop, or reset tracking immediately
+- Supports optional calibration to personalize thresholds
+- Supports manual correction for the live session
+- Supports local export of sessions, state segments, and daily summaries as JSON or CSV
+- Includes a development debug panel for raw signals and transition internals
 
-## What It Does Not Do
+## What The App Does Not Do
 
 - It does not detect “true focus”
+- It does not read thoughts, comprehension, or attention directly
 - It does not upload video to a server
 - It does not record or store raw webcam footage
-- It does not include cloud sync, accounts, or productivity scoring gimmicks
-- It does not do global OS-level keyboard/mouse tracking in v1
+- It does not include cloud sync, telemetry, accounts, or productivity scoring gimmicks
+- It does not do global OS-level keyboard or mouse tracking in v1
 
 ## Privacy Model
 
-- Webcam processing is local only
-- The app stores derived data only:
+- Webcam processing stays on-device
+- The app stores only derived data:
   - sessions
   - state segments
   - daily summaries
   - settings
-- No backend service is required
-- No account or login exists
+- No cloud backend is used
+- No account system exists
 - The UI always shows a camera status badge
-- Tracking can be paused instantly
+- Tracking can be paused immediately
+- Export is local-only and contains derived study data, not recordings
 
-## Stack
+## State Definitions
 
-- Tauri 2
-- React 19
-- TypeScript
-- Vite
-- MediaPipe Tasks Vision `FaceLandmarker`
-- SQLite via Rust `rusqlite`
-- Recharts for dashboard charts
-- Plain CSS for a minimal desktop-first UI
+`ON_SCREEN`
+
+- face visible
+- head roughly aligned with the display
+- recent interaction can raise confidence, but is not required
+
+`DESK_WORK`
+
+- face visible
+- sustained head-down posture
+- intended as an estimate for desk work, note-taking, writing, or reading
+- not a direct detector for handwriting specifically
+
+`AWAY`
+
+- no face for at least the away timeout
+- or face clearly turned away and the away candidate persists
+
+`UNCERTAIN`
+
+- weak, conflicting, or unavailable signals
+
+## Calibration Flow
+
+Calibration is optional. It helps tune thresholds to the user’s own posture and camera framing.
+
+The flow asks the user to:
+
+1. look at the screen normally
+2. look down as if reading or taking notes
+3. look away or leave the frame
+
+From those short samples the app derives a local calibration profile for:
+
+- screen-facing threshold
+- head-down threshold
+- away timeout recommendation
+
+Calibration improves fit, but it does not make webcam heuristics a direct measurement of concentration.
+
+## Manual Correction
+
+During a live session, the user can manually mark the current segment as:
+
+- on-screen
+- desk work
+- away
+- uncertain
+
+Manual corrections:
+
+- affect only the active session
+- create manual segments in the timeline
+- are stored as manual overrides in exported segment data
+- help interpretation when the automatic estimate is not good enough
+
+The current implementation supports live correction only, not full retrospective editing of completed sessions.
 
 ## Inference Heuristics
 
-The app uses heuristics, not a custom ML model.
+The app uses explicit heuristics, not a custom ML model.
 
 ### Raw webcam signals
 
@@ -77,59 +129,122 @@ The app uses heuristics, not a custom ML model.
 - recent in-app keyboard activity
 - recent in-app pointer activity
 - recent interaction timestamp
-- approximate per-minute event counts
-
-### State logic
-
-`ON_SCREEN`
-
-- face visible
-- head roughly aligned with the display
-- recent input slightly boosts confidence but is not required
-
-`WRITING`
-
-- face visible
-- sustained head-down posture
-- keyboard activity can increase confidence
-
-`AWAY`
-
-- no face for at least the away timeout
-- or face clearly turned away and the away candidate persists
-
-`UNCERTAIN`
-
-- weak, conflicting, or unavailable signals
+- approximate event counts per minute
 
 ### Smoothing
 
-To reduce flicker, the app applies:
+To reduce flicker, the engine applies:
 
-- minimum hold times by state
-- away timeout before absence counts as away
-- transition cooldowns between stable states
+- minimum hold times before promotion
+- state-specific dwell time
+- transition cooldowns
+- explicit pending-state tracking
 
-Thresholds live in `src/services/inference/config.ts` and are surfaced in the settings panel.
+The core logic lives in:
+
+- `src/services/inference/config.ts`
+- `src/services/inference/engine.ts`
+
+## Debug Mode
+
+Debug mode shows:
+
+- raw signals
+- stable state
+- candidate state
+- confidence
+- transition reason
+- hold and cooldown timing
+- active thresholds
+- whether calibration is active
+- whether a manual override is active
+
+This is intended for development and threshold tuning.
+
+## Local Persistence
+
+Desktop mode stores data in SQLite via the Rust backend.
+
+Tables / entities:
+
+- `sessions`
+- `state_segments`
+- `daily_summaries`
+- `app_settings`
+
+During plain web preview, the app falls back to `localStorage` so the UI can still be exercised without the Tauri shell.
+
+## Export
+
+Export is local-only.
+
+Available exports:
+
+- full JSON export
+- sessions CSV
+- state segments CSV
+- daily summaries CSV
+
+Exported data includes:
+
+- session start/end and totals
+- segment timing, state, confidence, source, and manual note
+- daily summaries
+- current app settings
+
+It does not include raw video.
+
+## Security Notes
+
+The Tauri config now uses a restrictive CSP instead of `null`.
+
+Current security posture:
+
+- production CSP limits scripts, media, workers, and assets to local sources
+- development CSP allows the local Vite dev server and websocket HMR
+- `freezePrototype` is enabled
+
+Tradeoff:
+
+- `style-src 'unsafe-inline'` is still allowed because the current React UI uses inline styles for state and camera badges
+- `script-src 'wasm-unsafe-eval'` is allowed because local MediaPipe WASM needs it
+
+These are narrower than the previous `null` CSP, but not maximally strict.
 
 ## Project Structure
 
 ```text
-focus-estimate/
+productivity_MVP/
   public/
     favicon.svg
-    mediapipe/                 # generated by npm run setup:assets
-    models/                    # generated by npm run setup:assets
+    mediapipe/                  # generated by npm run setup:assets
+    models/                     # generated by npm run setup:assets
   scripts/
+    run-tauri.mjs
     setup-mediapipe.mjs
   src/
     components/
+      CalibrationPanel.tsx
+      DebugSignalsPanel.tsx
+      HistoryPanel.tsx
+      SessionControls.tsx
+      SettingsPanel.tsx
+      StateSummaryPanel.tsx
+      StatsPanel.tsx
+      TimelinePanel.tsx
+      TopBar.tsx
+      WebcamPanel.tsx
     hooks/
+      useActivitySignals.ts
+      useAttentionInference.ts
+      useCameraTracking.ts
+      useProductivityTracker.ts
     lib/
     services/
       activity/
       camera/
       inference/
+      session/
       storage/
     styles/
     types/
@@ -141,30 +256,22 @@ focus-estimate/
       lib.rs
       main.rs
       models.rs
+    Cargo.toml
     tauri.conf.json
+  tests/
   README.md
 ```
 
-## Local Persistence
-
-The Tauri backend stores data in SQLite:
-
-- `sessions`
-- `state_segments`
-- `daily_summaries`
-- `app_settings`
-
-During plain web preview, the frontend falls back to `localStorage` so the UI can still be exercised without the Tauri shell. The intended desktop path is SQLite.
-
 ## Setup
 
-## Quick Start
+## Quick Start: Web Preview
 
-If you only want to open the project and run the web preview:
+If you only want to inspect the UI in the browser:
 
 ```bash
 git clone https://github.com/ernestterjyan/productivity_MVP.git
 cd productivity_MVP
+source "$HOME/.nvm/nvm.sh"
 npm install
 npm run setup:assets
 npm run dev
@@ -172,26 +279,9 @@ npm run dev
 
 Then open `http://localhost:1420`.
 
-If you want the full desktop app with Tauri on Ubuntu or Debian, use the desktop setup section below instead.
+## Desktop Setup On Ubuntu/Debian
 
-### Prerequisites
-
-- Node.js 24+
-- npm 11+
-- Rust stable toolchain with `cargo`
-- Tauri Linux system dependencies if building on Linux
-
-Typical Linux desktop requirements include:
-
-- `webkit2gtk-4.1`
-- `libsoup-3.0`
-- other standard Tauri GTK/WebKit dependencies
-
-### Desktop Setup On Ubuntu/Debian
-
-The following commands are the copy-paste path for a fresh Ubuntu/Debian-style machine.
-
-Install the Linux system packages recommended by the Tauri v2 prerequisites page:
+Install Linux system packages:
 
 ```bash
 sudo apt update
@@ -204,7 +294,8 @@ sudo apt install -y \
   libxdo-dev \
   libssl-dev \
   libayatana-appindicator3-dev \
-  librsvg2-dev
+  librsvg2-dev \
+  pkg-config
 ```
 
 Install Rust:
@@ -214,100 +305,66 @@ curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf | sh
 source "$HOME/.cargo/env"
 ```
 
-Check your toolchain:
-
-```bash
-node -v
-npm -v
-cargo -V
-```
-
-Clone and run the desktop app:
+Clone and run:
 
 ```bash
 git clone https://github.com/ernestterjyan/productivity_MVP.git
 cd productivity_MVP
+source "$HOME/.nvm/nvm.sh"
 npm install
 npm run setup:assets
 npm run tauri:check
 npm run tauri:dev
 ```
 
-If `cargo` was just installed and your current shell still cannot find it, run:
+If `cargo` was just installed and the shell still cannot find it:
 
 ```bash
 source "$HOME/.cargo/env"
 ```
 
-The desktop scripts now do a preflight check before launching Tauri. On Linux they fail early with the exact Rust or WebKitGTK install commands instead of a raw `cargo metadata` error.
+## Commands
 
-### Install
-
-If Node, npm, and Rust are already installed:
+Web preview:
 
 ```bash
-git clone https://github.com/ernestterjyan/productivity_MVP.git
-cd productivity_MVP
-npm install
-npm run setup:assets
-```
-
-`setup:assets` does two things:
-
-- copies MediaPipe WASM files into `public/mediapipe`
-- downloads the local face landmarker model into `public/models`
-
-## Run
-
-Web preview only:
-
-```bash
-cd productivity_MVP
+source "$HOME/.nvm/nvm.sh"
 npm run dev
 ```
 
-Desktop app with Tauri:
+Desktop preflight:
 
 ```bash
-cd productivity_MVP
+source "$HOME/.nvm/nvm.sh"
 npm run tauri:check
+```
+
+Desktop dev:
+
+```bash
+source "$HOME/.nvm/nvm.sh"
 npm run tauri:dev
 ```
 
 Production web build:
 
 ```bash
-cd productivity_MVP
+source "$HOME/.nvm/nvm.sh"
 npm run build
-```
-
-Desktop bundle:
-
-```bash
-cd productivity_MVP
-npm run tauri:check
-npm run tauri:build
-```
-
-Lint:
-
-```bash
-cd productivity_MVP
-npm run lint
 ```
 
 Tests:
 
 ```bash
-cd productivity_MVP
+source "$HOME/.nvm/nvm.sh"
 npm run test
 ```
 
-Desktop environment check only:
+Lint:
 
 ```bash
-cd productivity_MVP
-npm run tauri:check
+source "$HOME/.nvm/nvm.sh"
+npm run lint
 ```
 
 ## Desktop Troubleshooting
@@ -335,7 +392,7 @@ npm run tauri:check
 npm run tauri:dev
 ```
 
-If you see a missing `webkit2gtk-4.1` or other `pkg-config` package error on Linux, install the desktop prerequisites:
+If you see a missing `webkit2gtk-4.1` error on Linux, install the desktop prerequisites:
 
 ```bash
 sudo apt update
@@ -356,18 +413,11 @@ sudo apt install -y \
 
 Verified in this environment:
 
-- `npm run setup:assets`
 - `npm run lint`
 - `npm run build`
 - `npm run test`
-- `npm run tauri:check` fails early with a clear Linux dependency message instead of falling through to a raw Cargo error
-
-Verified by automated tests:
-
-- browser fallback persistence survives reload and rebuilds daily summaries
-- abandoned active sessions are cleaned up on bootstrap in the browser fallback
-- inference smoothing does not immediately promote a fresh candidate state
-- recent interaction suppresses a premature `AWAY` promotion
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 --no-deps`
 
 Not fully verifiable in this environment:
 
@@ -376,25 +426,27 @@ Not fully verifiable in this environment:
 
 Reason:
 
-- the Linux WebKitGTK desktop dependency set is incomplete in this container
-- the preflight now fails with explicit install commands instead of dropping into a Cargo or pkg-config error
+- this container still lacks the Linux WebKitGTK development packages required by Tauri
+- the desktop preflight now fails early with exact install commands instead of dropping into a raw Cargo or pkg-config error
 
 ## Limitations
 
-- Writing detection is based on head-down posture, not handwriting recognition
-- “On screen” uses head orientation as a proxy for attention, not gaze tracking
-- Input activity is in-app only for the MVP
-- Daily summaries are grouped by session start date, so sessions spanning midnight are not perfectly split across days
-- Webcam quality and lighting can affect landmark stability
-- The Tauri SQLite backend is implemented, but this container still cannot run the desktop shell because Linux WebKitGTK development packages are missing
-- If the camera is unavailable, the app falls back to an `UNCERTAIN` estimate rather than pretending input activity alone proves focus
+- The app estimates study behavior, not cognition
+- “On screen” is head-orientation based, not gaze tracking
+- `DESK_WORK` is a posture-based estimate, not a handwriting detector
+- Webcam quality, lighting, and camera angle affect signal stability
+- Activity tracking is in-app only in v1
+- Sessions spanning midnight are still grouped by session start date
+- Manual correction is live-only; completed sessions cannot yet be edited retroactively
+- Export uses client-side file download behavior rather than a desktop save dialog
+- The Tauri desktop runtime itself is still not end-to-end verified in this container
 
 ## Future Roadmap
 
-- optional global input tracking via platform-specific extensions
-- better day-splitting for sessions that span midnight
-- session tags / subjects
-- CSV export
+- global OS-level activity tracking as an optional platform-specific extension
+- retrospective correction for completed sessions
+- better midnight day-splitting
+- session tags or subjects
 - confidence trend overlays
-- Pomodoro or break reminders
-- onboarding flow for permissions and heuristics explanation
+- CSV bundle export or desktop save dialog
+- onboarding for camera permission and heuristic explanation

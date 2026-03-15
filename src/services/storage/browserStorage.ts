@@ -10,10 +10,12 @@ import type {
   AppSettings,
   BootstrapPayload,
   DailySummary,
+  ExportBundle,
   PersistedSegmentInput,
   SessionCompletionInput,
   SessionRecord,
   StateTotals,
+  AttentionState,
 } from '@/types/app'
 import type { SessionSeed } from '@/types/app'
 import type { StorageClient } from './client'
@@ -50,10 +52,9 @@ function readStore(): BrowserStore {
       sessions: parsed.sessions ?? [],
       segments: parsed.segments ?? [],
       dailySummaries: parsed.dailySummaries ?? [],
-      settings: {
-        ...DEFAULT_SETTINGS,
-        ...(parsed.settings ?? {}),
-      },
+      settings: normalizeSettings(
+        (parsed.settings ?? {}) as Partial<AppSettings> & Record<string, unknown>,
+      ),
     }
   } catch {
     return createStore()
@@ -64,21 +65,90 @@ function writeStore(store: BrowserStore) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
 }
 
+function normalizeStateName(state: string): AttentionState {
+  if (state === 'WRITING') {
+    return 'DESK_WORK'
+  }
+
+  return state as AttentionState
+}
+
+function normalizeTotals(
+  totals:
+    | Partial<StateTotals>
+    | Partial<Record<'WRITING' | keyof StateTotals, number>>
+    | undefined,
+): StateTotals {
+  const legacyTotals = totals as
+    | Partial<Record<'WRITING' | keyof StateTotals, number>>
+    | undefined
+
+  return {
+    ON_SCREEN: Math.max(0, Number(legacyTotals?.ON_SCREEN ?? 0)),
+    DESK_WORK: Math.max(
+      0,
+      Number(legacyTotals?.DESK_WORK ?? legacyTotals?.WRITING ?? 0),
+    ),
+    AWAY: Math.max(0, Number(legacyTotals?.AWAY ?? 0)),
+    UNCERTAIN: Math.max(0, Number(legacyTotals?.UNCERTAIN ?? 0)),
+  }
+}
+
+function normalizeSettings(
+  settings:
+    | (Partial<AppSettings> & Record<string, unknown>)
+    | AppSettings
+    | undefined = {},
+) {
+  const legacySettings = settings as Partial<Record<string, unknown>>
+
+  return {
+    ...DEFAULT_SETTINGS,
+    ...settings,
+    deskWorkSensitivity: Number(
+      legacySettings.deskWorkSensitivity ??
+        legacySettings.writingSensitivity ??
+        DEFAULT_SETTINGS.deskWorkSensitivity,
+    ),
+    deskWorkSustainMs: Number(
+      legacySettings.deskWorkSustainMs ??
+        legacySettings.writingSustainMs ??
+        DEFAULT_SETTINGS.deskWorkSustainMs,
+    ),
+    calibrationProfile:
+      settings.calibrationProfile && typeof settings.calibrationProfile === 'object'
+        ? {
+            ...settings.calibrationProfile,
+          }
+        : null,
+  }
+}
+
 function normalizeStore(store: BrowserStore) {
   const completedSessions = store.sessions.filter(
     (session) => session.status === 'COMPLETED',
   )
-  const allowedSessionIds = new Set(completedSessions.map((session) => session.id))
+  const normalizedSessions = completedSessions.map((session) => ({
+    ...session,
+    totals: normalizeTotals(session.totals),
+  }))
+  const allowedSessionIds = new Set(normalizedSessions.map((session) => session.id))
 
-  store.sessions = completedSessions
-  store.segments = store.segments.filter((segment) =>
-    allowedSessionIds.has(segment.sessionId),
-  )
+  store.sessions = normalizedSessions
+  store.segments = store.segments
+    .filter((segment) => allowedSessionIds.has(segment.sessionId))
+    .map((segment) => ({
+      ...segment,
+      state: normalizeStateName(segment.state),
+      source: segment.source ?? 'INFERENCE',
+      manualNote: segment.manualNote ?? null,
+    }))
+  store.settings = normalizeSettings(store.settings as Partial<AppSettings> & Record<string, unknown>)
 }
 
 function mergeTotals(target: StateTotals, next: StateTotals) {
   target.ON_SCREEN += next.ON_SCREEN
-  target.WRITING += next.WRITING
+  target.DESK_WORK += next.DESK_WORK
   target.AWAY += next.AWAY
   target.UNCERTAIN += next.UNCERTAIN
 }
@@ -140,6 +210,22 @@ function toBootstrap(store: BrowserStore): BootstrapPayload {
       .filter((session) => session.status === 'COMPLETED')
       .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
       .slice(0, 12),
+  }
+}
+
+function toExportBundle(store: BrowserStore): ExportBundle {
+  return {
+    exportedAt: new Date().toISOString(),
+    settings: store.settings,
+    sessions: [...store.sessions].sort((left, right) =>
+      right.startedAt.localeCompare(left.startedAt),
+    ),
+    stateSegments: [...store.segments].sort((left, right) =>
+      left.startedAt.localeCompare(right.startedAt),
+    ),
+    dailySummaries: [...store.dailySummaries].sort((left, right) =>
+      right.date.localeCompare(left.date),
+    ),
   }
 }
 
@@ -212,11 +298,20 @@ export function createBrowserStorageClient(): StorageClient {
 
     async saveSettings(settings: AppSettings) {
       const store = readStore()
-      store.settings = settings
+      store.settings = normalizeSettings(settings)
       pruneStore(store)
       rebuildDailySummaries(store)
       writeStore(store)
       return toBootstrap(store)
+    },
+
+    async exportData() {
+      const store = readStore()
+      normalizeStore(store)
+      pruneStore(store)
+      rebuildDailySummaries(store)
+      writeStore(store)
+      return toExportBundle(store)
     },
   }
 }

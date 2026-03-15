@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type {
   AppSettings,
   BootstrapPayload,
+  ExportBundle,
   PersistedSegmentInput,
   SessionCompletionInput,
   SessionSeed,
@@ -27,6 +28,9 @@ export function createTauriStorageClient(): StorageClient {
     },
     saveSettings(settings: AppSettings) {
       return invoke<BootstrapPayload>('save_settings', { settings })
+    },
+    exportData() {
+      return invoke<ExportBundle>('export_data')
     },
   }
 }

@@ -12,8 +12,8 @@ pub enum SessionRecordStatus {
 pub struct StateTotals {
     #[serde(rename = "ON_SCREEN")]
     pub on_screen: i64,
-    #[serde(rename = "WRITING")]
-    pub writing: i64,
+    #[serde(rename = "DESK_WORK", alias = "WRITING")]
+    pub desk_work: i64,
     #[serde(rename = "AWAY")]
     pub away: i64,
     #[serde(rename = "UNCERTAIN")]
@@ -24,15 +24,31 @@ impl StateTotals {
     pub fn empty() -> Self {
         Self {
             on_screen: 0,
-            writing: 0,
+            desk_work: 0,
             away: 0,
             uncertain: 0,
         }
     }
 
     pub fn tracked_ms(&self) -> i64 {
-        self.on_screen + self.writing + self.away + self.uncertain
+        self.on_screen + self.desk_work + self.away + self.uncertain
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalibrationProfile {
+    pub calibrated_at: String,
+    pub screen_facing_baseline: f64,
+    pub recommended_screen_facing_threshold: f64,
+    pub desk_work_head_down_baseline: f64,
+    pub recommended_head_down_threshold: f64,
+    pub desk_work_screen_facing_upper_bound: f64,
+    pub away_loss_delay_ms: i64,
+    pub recommended_away_timeout_ms: i64,
+    pub screen_sample_count: i64,
+    pub desk_work_sample_count: i64,
+    pub away_sample_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,12 +59,15 @@ pub struct AppSettings {
     pub away_timeout_ms: i64,
     pub screen_facing_threshold: f64,
     pub face_away_threshold: f64,
-    pub writing_sensitivity: i64,
-    pub writing_sustain_ms: i64,
+    #[serde(alias = "writingSensitivity")]
+    pub desk_work_sensitivity: i64,
+    #[serde(alias = "writingSustainMs")]
+    pub desk_work_sustain_ms: i64,
     pub transition_cooldown_ms: i64,
     pub retention_enabled: bool,
     pub retention_days: i64,
     pub start_tracking_on_open: bool,
+    pub calibration_profile: Option<CalibrationProfile>,
 }
 
 impl Default for AppSettings {
@@ -59,12 +78,13 @@ impl Default for AppSettings {
             away_timeout_ms: 6000,
             screen_facing_threshold: 0.62,
             face_away_threshold: 0.3,
-            writing_sensitivity: 62,
-            writing_sustain_ms: 2800,
+            desk_work_sensitivity: 62,
+            desk_work_sustain_ms: 2800,
             transition_cooldown_ms: 1200,
             retention_enabled: false,
             retention_days: 30,
             start_tracking_on_open: false,
+            calibration_profile: None,
         }
     }
 }
@@ -115,6 +135,8 @@ pub struct PersistedSegmentInput {
     pub duration_ms: i64,
     pub confidence: f64,
     pub reason: String,
+    pub source: String,
+    pub manual_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +146,16 @@ pub struct SessionCompletionInput {
     pub ended_at: String,
     pub elapsed_ms: i64,
     pub totals: StateTotals,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportBundle {
+    pub exported_at: String,
+    pub settings: AppSettings,
+    pub sessions: Vec<SessionRecord>,
+    pub state_segments: Vec<PersistedSegmentInput>,
+    pub daily_summaries: Vec<DailySummary>,
 }
 
 pub fn empty_daily_summary(date: String) -> DailySummary {

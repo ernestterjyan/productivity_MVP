@@ -1,4 +1,4 @@
-export type AttentionState = 'ON_SCREEN' | 'WRITING' | 'AWAY' | 'UNCERTAIN'
+export type AttentionState = 'ON_SCREEN' | 'DESK_WORK' | 'AWAY' | 'UNCERTAIN'
 
 export type SessionStatus = 'IDLE' | 'RUNNING' | 'PAUSED'
 
@@ -8,11 +8,34 @@ export type CameraStatus = 'ACTIVE' | 'PAUSED' | 'UNAVAILABLE'
 
 export type ViewKey = 'OVERVIEW' | 'HISTORY' | 'SETTINGS'
 
+export type SegmentSource = 'INFERENCE' | 'MANUAL'
+
+export type ExportFormat = 'JSON' | 'SESSIONS_CSV' | 'SEGMENTS_CSV' | 'DAILY_CSV'
+
+export type CalibrationStepKey =
+  | 'SCREEN_BASELINE'
+  | 'DESK_WORK_POSTURE'
+  | 'AWAY_BASELINE'
+
 export interface StateTotals {
   ON_SCREEN: number
-  WRITING: number
+  DESK_WORK: number
   AWAY: number
   UNCERTAIN: number
+}
+
+export interface CalibrationProfile {
+  calibratedAt: string
+  screenFacingBaseline: number
+  recommendedScreenFacingThreshold: number
+  deskWorkHeadDownBaseline: number
+  recommendedHeadDownThreshold: number
+  deskWorkScreenFacingUpperBound: number
+  awayLossDelayMs: number
+  recommendedAwayTimeoutMs: number
+  screenSampleCount: number
+  deskWorkSampleCount: number
+  awaySampleCount: number
 }
 
 export interface AppSettings {
@@ -21,26 +44,31 @@ export interface AppSettings {
   awayTimeoutMs: number
   screenFacingThreshold: number
   faceAwayThreshold: number
-  writingSensitivity: number
-  writingSustainMs: number
+  deskWorkSensitivity: number
+  deskWorkSustainMs: number
   transitionCooldownMs: number
   retentionEnabled: boolean
   retentionDays: number
   startTrackingOnOpen: boolean
+  calibrationProfile: CalibrationProfile | null
 }
 
-export interface InferenceConfig {
+export interface InferenceThresholds {
   awayTimeoutMs: number
   screenFacingThreshold: number
   faceAwayThreshold: number
   headDownThreshold: number
-  writingScreenFacingUpperBound: number
-  writingSustainMs: number
+  deskWorkScreenFacingUpperBound: number
+  deskWorkSustainMs: number
   transitionCooldownMs: number
   recentInteractionMs: number
   activityWindowMs: number
   awayInputGraceMs: number
   minimumHoldMs: Record<AttentionState, number>
+}
+
+export interface InferenceConfig extends InferenceThresholds {
+  calibrationActive: boolean
 }
 
 export interface WebcamSignals {
@@ -68,14 +96,40 @@ export interface ActivitySignals {
   pointerEventsPerMinute: number
 }
 
+export interface InferenceFlags {
+  strongScreenFacing: boolean
+  clearlyTurnedAway: boolean
+  awayCandidate: boolean
+  deskWorkCandidate: boolean
+  onScreenCandidate: boolean
+}
+
+export interface InferenceDebug {
+  stableState: AttentionState
+  candidateState: AttentionState
+  pendingState: AttentionState | null
+  pendingDurationMs: number
+  requiredHoldMs: number
+  remainingHoldMs: number
+  cooldownRemainingMs: number
+  transitionBlockedByCooldown: boolean
+  calibrationActive: boolean
+  thresholds: InferenceThresholds
+  flags: InferenceFlags
+  manualOverrideState: AttentionState | null
+}
+
 export interface InferenceSnapshot {
   state: AttentionState
   candidateState: AttentionState
   confidence: number
   reason: string
+  transitionReason: string
+  source: SegmentSource
   updatedAt: string
   webcam: WebcamSignals
   activity: ActivitySignals
+  debug: InferenceDebug
 }
 
 export interface TimelineSegment {
@@ -87,6 +141,8 @@ export interface TimelineSegment {
   durationMs: number
   confidence: number
   reason: string
+  source: SegmentSource
+  manualNote: string | null
   isActive?: boolean
 }
 
@@ -136,6 +192,8 @@ export interface PersistedSegmentInput {
   durationMs: number
   confidence: number
   reason: string
+  source: SegmentSource
+  manualNote: string | null
 }
 
 export interface SessionCompletionInput {
@@ -143,4 +201,18 @@ export interface SessionCompletionInput {
   endedAt: string
   elapsedMs: number
   totals: StateTotals
+}
+
+export interface ExportBundle {
+  exportedAt: string
+  settings: AppSettings
+  sessions: SessionRecord[]
+  stateSegments: PersistedSegmentInput[]
+  dailySummaries: DailySummary[]
+}
+
+export interface ManualOverrideState {
+  state: AttentionState
+  appliedAt: string
+  note: string
 }

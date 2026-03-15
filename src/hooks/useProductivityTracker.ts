@@ -5,79 +5,77 @@ import {
   useRef,
   useState,
 } from 'react'
-import {
-  addToTotals,
-  cloneTotals,
-  createEmptyTotals,
-  totalTrackedMs,
-} from '@/lib/attention'
+import { STATE_LABELS, totalTrackedMs } from '@/lib/attention'
 import { getStorageClient } from '@/services/storage/client'
-import { DEFAULT_BOOTSTRAP, DEFAULT_SETTINGS } from '@/services/inference/config'
+import {
+  downloadExportFile,
+} from '@/services/storage/exporters'
+import {
+  DEFAULT_BOOTSTRAP,
+  DEFAULT_SETTINGS,
+} from '@/services/inference/config'
 import type {
   AttentionState,
+  CalibrationProfile,
   DailySummary,
+  ExportFormat,
   InferenceSnapshot,
-  LiveSession,
-  PersistedSegmentInput,
+  ManualOverrideState,
   SessionRecord,
   SessionStatus,
-  TimelineSegment,
   ViewKey,
 } from '@/types/app'
 import { useActivitySignals } from './useActivitySignals'
 import { useAttentionInference } from './useAttentionInference'
 import { useCameraTracking } from './useCameraTracking'
+import {
+  accountRuntimeTo,
+  closeRuntimeSegment,
+  createSessionRuntime,
+  makeLiveSession,
+  openRuntimeSegment,
+  runtimeSegmentMatches,
+  updateRuntimeSegmentMetadata,
+  type SegmentDescriptor,
+  type SessionRuntime,
+} from '@/services/session/runtime'
 
-interface SessionRuntime {
-  id: string
-  startedAt: string
-  totals: ReturnType<typeof createEmptyTotals>
-  closedSegments: PersistedSegmentInput[]
-  activeSegmentState: AttentionState | null
-  activeSegmentStartMs: number | null
-  activeSegmentConfidence: number
-  activeSegmentReason: string
-  lastAccountedAtMs: number | null
+function createDescriptor(snapshot: InferenceSnapshot): SegmentDescriptor {
+  return {
+    state: snapshot.state,
+    confidence: snapshot.confidence,
+    reason: snapshot.reason,
+    source: snapshot.source,
+    manualNote: snapshot.source === 'MANUAL' ? snapshot.reason : null,
+  }
 }
 
-function makeLiveSession(
-  runtime: SessionRuntime,
-  status: SessionStatus,
-  nowMs: number,
-): LiveSession {
-  const totals = cloneTotals(runtime.totals)
-  const segments: TimelineSegment[] = runtime.closedSegments.map((segment) => ({
-    ...segment,
-  }))
-
-  if (
-    status === 'RUNNING' &&
-    runtime.activeSegmentState &&
-    runtime.activeSegmentStartMs !== null &&
-    runtime.lastAccountedAtMs !== null
-  ) {
-    addToTotals(totals, runtime.activeSegmentState, nowMs - runtime.lastAccountedAtMs)
-    segments.push({
-      id: `live-${runtime.id}`,
-      sessionId: runtime.id,
-      state: runtime.activeSegmentState,
-      startedAt: new Date(runtime.activeSegmentStartMs).toISOString(),
-      endedAt: null,
-      durationMs: Math.max(0, nowMs - runtime.activeSegmentStartMs),
-      confidence: runtime.activeSegmentConfidence,
-      reason: runtime.activeSegmentReason,
-      isActive: true,
-    })
+function withManualOverride(
+  snapshot: InferenceSnapshot,
+  manualOverride: ManualOverrideState | null,
+): InferenceSnapshot {
+  if (!manualOverride) {
+    return {
+      ...snapshot,
+      debug: {
+        ...snapshot.debug,
+        manualOverrideState: null,
+      },
+    }
   }
 
   return {
-    id: runtime.id,
-    startedAt: runtime.startedAt,
-    endedAt: null,
-    elapsedMs: totalTrackedMs(totals),
-    totals,
-    status,
-    segments,
+    ...snapshot,
+    state: manualOverride.state,
+    confidence: 1,
+    reason: manualOverride.note,
+    transitionReason: 'Manual correction is active.',
+    source: 'MANUAL',
+    updatedAt: manualOverride.appliedAt,
+    debug: {
+      ...snapshot.debug,
+      manualOverrideState: manualOverride.state,
+    },
   }
 }
 
@@ -94,28 +92,33 @@ export function useProductivityTracker() {
   const [recentSessions, setRecentSessions] = useState<SessionRecord[]>(
     DEFAULT_BOOTSTRAP.recentSessions,
   )
-  const [currentSession, setCurrentSession] = useState<LiveSession | null>(null)
+  const [currentSession, setCurrentSession] = useState<ReturnType<typeof makeLiveSession> | null>(null)
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>('IDLE')
   const [hydrated, setHydrated] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [exportBusy, setExportBusy] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [manualOverride, setManualOverride] = useState<ManualOverrideState | null>(null)
+  const [calibrationOpen, setCalibrationOpen] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const runtimeRef = useRef<SessionRuntime | null>(null)
   const persistedSettingsRef = useRef(JSON.stringify(DEFAULT_SETTINGS))
   const autoStartRef = useRef(false)
   const clearError = useCallback(() => setErrorMessage(null), [])
 
+  const cameraEnabled = sessionStatus === 'RUNNING' || calibrationOpen
   const activity = useActivitySignals(sessionStatus === 'RUNNING', settings)
   const { signals: webcam, error: cameraError } = useCameraTracking({
-    enabled: sessionStatus === 'RUNNING',
+    enabled: cameraEnabled,
     videoRef,
   })
-  const inference = useAttentionInference({
+  const baseInference = useAttentionInference({
     enabled: sessionStatus === 'RUNNING',
     webcam,
     activity,
     settings,
   })
+  const inference = withManualOverride(baseInference, manualOverride)
 
   const syncHistory = useCallback((payload: {
     todaySummary: DailySummary
@@ -140,7 +143,11 @@ export function useProductivityTracker() {
     setCurrentSession(makeLiveSession(runtime, status, Date.now()))
   }, [])
 
-  const persistSegment = useCallback(async (segment: PersistedSegmentInput) => {
+  const persistClosedSegment = useCallback(async (segment: ReturnType<typeof closeRuntimeSegment>) => {
+    if (!segment) {
+      return
+    }
+
     try {
       await storageRef.current.appendStateSegment(segment)
     } catch (error) {
@@ -149,77 +156,6 @@ export function useProductivityTracker() {
       )
     }
   }, [])
-
-  const accountUpTo = useCallback((nowMs: number) => {
-    const runtime = runtimeRef.current
-
-    if (
-      !runtime ||
-      runtime.activeSegmentState === null ||
-      runtime.lastAccountedAtMs === null
-    ) {
-      return
-    }
-
-    const delta = Math.max(0, nowMs - runtime.lastAccountedAtMs)
-
-    if (delta > 0) {
-      addToTotals(runtime.totals, runtime.activeSegmentState, delta)
-      runtime.lastAccountedAtMs = nowMs
-    }
-  }, [])
-
-  const closeActiveSegment = useCallback((endMs: number) => {
-    const runtime = runtimeRef.current
-
-    if (
-      !runtime ||
-      runtime.activeSegmentState === null ||
-      runtime.activeSegmentStartMs === null
-    ) {
-      return
-    }
-
-    accountUpTo(endMs)
-    const durationMs = Math.max(0, endMs - runtime.activeSegmentStartMs)
-
-    if (durationMs > 0) {
-      const segment: PersistedSegmentInput = {
-        id: crypto.randomUUID(),
-        sessionId: runtime.id,
-        state: runtime.activeSegmentState,
-        startedAt: new Date(runtime.activeSegmentStartMs).toISOString(),
-        endedAt: new Date(endMs).toISOString(),
-        durationMs,
-        confidence: runtime.activeSegmentConfidence,
-        reason: runtime.activeSegmentReason,
-      }
-
-      runtime.closedSegments.push(segment)
-      void persistSegment(segment)
-    }
-
-    runtime.activeSegmentState = null
-    runtime.activeSegmentStartMs = null
-    runtime.lastAccountedAtMs = null
-  }, [accountUpTo, persistSegment])
-
-  const openActiveSegment = useCallback(
-    (snapshot: InferenceSnapshot, nowMs: number) => {
-      const runtime = runtimeRef.current
-
-      if (!runtime) {
-        return
-      }
-
-      runtime.activeSegmentState = snapshot.state
-      runtime.activeSegmentStartMs = nowMs
-      runtime.activeSegmentConfidence = snapshot.confidence
-      runtime.activeSegmentReason = snapshot.reason
-      runtime.lastAccountedAtMs = nowMs
-    },
-    [],
-  )
 
   useEffect(() => {
     let cancelled = false
@@ -291,6 +227,22 @@ export function useProductivityTracker() {
     return () => window.clearTimeout(timeoutId)
   }, [hydrated, settings, syncHistory])
 
+  const transitionToDescriptor = useCallback(
+    (descriptor: SegmentDescriptor, changeAtMs: number) => {
+      const runtime = runtimeRef.current
+
+      if (!runtime) {
+        return
+      }
+
+      const closed = closeRuntimeSegment(runtime, changeAtMs)
+      openRuntimeSegment(runtime, descriptor, changeAtMs)
+      void persistClosedSegment(closed)
+      syncLiveSession('RUNNING')
+    },
+    [persistClosedSegment, syncLiveSession],
+  )
+
   const handleStartSession = useCallback(async () => {
     if (busy || sessionStatus === 'RUNNING') {
       return
@@ -298,21 +250,12 @@ export function useProductivityTracker() {
 
     setBusy(true)
     setErrorMessage(null)
+    setManualOverride(null)
 
     try {
       const startedAt = new Date().toISOString()
       const session = await storageRef.current.createSession(startedAt)
-      runtimeRef.current = {
-        id: session.id,
-        startedAt: session.startedAt,
-        totals: createEmptyTotals(),
-        closedSegments: [],
-        activeSegmentState: null,
-        activeSegmentStartMs: null,
-        activeSegmentConfidence: inference.confidence,
-        activeSegmentReason: inference.reason,
-        lastAccountedAtMs: null,
-      }
+      runtimeRef.current = createSessionRuntime(session)
 
       const nowMs = Date.now()
       setSessionStatus('RUNNING')
@@ -324,7 +267,7 @@ export function useProductivityTracker() {
     } finally {
       setBusy(false)
     }
-  }, [busy, inference, sessionStatus])
+  }, [busy, sessionStatus])
 
   useEffect(() => {
     if (!hydrated || autoStartRef.current || !settings.startTrackingOnOpen) {
@@ -341,12 +284,18 @@ export function useProductivityTracker() {
     }
 
     const intervalId = window.setInterval(() => {
-      accountUpTo(Date.now())
+      const runtime = runtimeRef.current
+
+      if (!runtime) {
+        return
+      }
+
+      accountRuntimeTo(runtime, Date.now())
       syncLiveSession('RUNNING')
     }, 1000)
 
     return () => window.clearInterval(intervalId)
-  }, [accountUpTo, sessionStatus, syncLiveSession])
+  }, [sessionStatus, syncLiveSession])
 
   useEffect(() => {
     const runtime = runtimeRef.current
@@ -355,51 +304,94 @@ export function useProductivityTracker() {
       return
     }
 
-    const changeAt = Date.parse(inference.updatedAt)
+    const descriptor = createDescriptor(inference)
+    const observedAt = Date.parse(inference.updatedAt)
+    const changeAtMs = Number.isFinite(observedAt) ? observedAt : Date.now()
 
     if (runtime.activeSegmentState === null) {
       if (webcam.cameraStatus === 'PAUSED') {
         return
       }
 
-      openActiveSegment(inference, changeAt)
+      openRuntimeSegment(runtime, descriptor, changeAtMs)
       syncLiveSession('RUNNING')
       return
     }
 
-    if (runtime.activeSegmentState === inference.state) {
-      runtime.activeSegmentConfidence = inference.confidence
-      runtime.activeSegmentReason = inference.reason
+    if (runtimeSegmentMatches(runtime, descriptor)) {
+      updateRuntimeSegmentMetadata(runtime, descriptor)
       return
     }
 
-    closeActiveSegment(changeAt)
-    openActiveSegment(inference, changeAt)
-    syncLiveSession('RUNNING')
+    transitionToDescriptor(descriptor, changeAtMs)
   }, [
-    closeActiveSegment,
     inference,
-    openActiveSegment,
     sessionStatus,
     syncLiveSession,
+    transitionToDescriptor,
     webcam.cameraStatus,
   ])
 
-  const handlePauseSession = useCallback(() => {
+  const clearManualOverride = useCallback(() => {
+    if (manualOverride === null) {
+      return
+    }
+
+    const runtime = runtimeRef.current
+    const nextOverride = null
+    setManualOverride(nextOverride)
+
+    if (sessionStatus !== 'RUNNING' || !runtime) {
+      return
+    }
+
+    const changedAtMs = Date.now()
+    const descriptor = createDescriptor(withManualOverride(baseInference, nextOverride))
+    transitionToDescriptor(descriptor, changedAtMs)
+  }, [baseInference, manualOverride, sessionStatus, transitionToDescriptor])
+
+  const handleManualCorrection = useCallback(
+    (state: AttentionState) => {
+      if (sessionStatus !== 'RUNNING' || !runtimeRef.current) {
+        return
+      }
+
+      const override: ManualOverrideState = {
+        state,
+        appliedAt: new Date().toISOString(),
+        note: `Manual correction: marked as ${STATE_LABELS[state].toLowerCase()}.`,
+      }
+
+      setManualOverride(override)
+      const descriptor = createDescriptor(withManualOverride(baseInference, override))
+      transitionToDescriptor(descriptor, Date.parse(override.appliedAt))
+    },
+    [baseInference, sessionStatus, transitionToDescriptor],
+  )
+
+  const handlePauseSession = useCallback(async () => {
     if (sessionStatus !== 'RUNNING') {
       return
     }
 
-    closeActiveSegment(Date.now())
+    const runtime = runtimeRef.current
+
+    if (runtime) {
+      const closed = closeRuntimeSegment(runtime, Date.now())
+      await persistClosedSegment(closed)
+    }
+
+    setManualOverride(null)
     setSessionStatus('PAUSED')
     syncLiveSession('PAUSED')
-  }, [closeActiveSegment, sessionStatus, syncLiveSession])
+  }, [persistClosedSegment, sessionStatus, syncLiveSession])
 
   const handleResumeSession = useCallback(() => {
     if (sessionStatus !== 'PAUSED' || !runtimeRef.current) {
       return
     }
 
+    setManualOverride(null)
     setSessionStatus('RUNNING')
     syncLiveSession('RUNNING')
   }, [sessionStatus, syncLiveSession])
@@ -415,7 +407,8 @@ export function useProductivityTracker() {
 
     try {
       if (sessionStatus === 'RUNNING') {
-        closeActiveSegment(Date.now())
+        const closed = closeRuntimeSegment(runtime, Date.now())
+        await persistClosedSegment(closed)
       }
 
       const payload = await storageRef.current.finishSession({
@@ -426,6 +419,7 @@ export function useProductivityTracker() {
       })
 
       runtimeRef.current = null
+      setManualOverride(null)
       setCurrentSession(null)
       setSessionStatus('IDLE')
       syncHistory(payload)
@@ -436,7 +430,7 @@ export function useProductivityTracker() {
     } finally {
       setBusy(false)
     }
-  }, [busy, closeActiveSegment, sessionStatus, syncHistory])
+  }, [busy, persistClosedSegment, sessionStatus, syncHistory])
 
   const handleResetSession = useCallback(async () => {
     const runtime = runtimeRef.current
@@ -450,6 +444,7 @@ export function useProductivityTracker() {
     try {
       const payload = await storageRef.current.deleteSession(runtime.id)
       runtimeRef.current = null
+      setManualOverride(null)
       setCurrentSession(null)
       setSessionStatus('IDLE')
       syncHistory(payload)
@@ -462,6 +457,56 @@ export function useProductivityTracker() {
     }
   }, [busy, syncHistory])
 
+  const openCalibration = useCallback(() => {
+    if (sessionStatus === 'RUNNING') {
+      setErrorMessage('Pause or stop the current session before running calibration.')
+      return
+    }
+
+    setCalibrationOpen(true)
+    setView('SETTINGS')
+    setErrorMessage(null)
+  }, [sessionStatus])
+
+  const closeCalibration = useCallback(() => {
+    setCalibrationOpen(false)
+  }, [])
+
+  const saveCalibration = useCallback((profile: CalibrationProfile) => {
+    setSettings((current) => ({
+      ...current,
+      calibrationProfile: profile,
+    }))
+    setCalibrationOpen(false)
+  }, [])
+
+  const clearCalibration = useCallback(() => {
+    setSettings((current) => ({
+      ...current,
+      calibrationProfile: null,
+    }))
+  }, [])
+
+  const handleExport = useCallback(async (format: ExportFormat) => {
+    if (exportBusy) {
+      return
+    }
+
+    setExportBusy(true)
+    setErrorMessage(null)
+
+    try {
+      const bundle = await storageRef.current.exportData()
+      downloadExportFile(format, bundle)
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to export local study data.',
+      )
+    } finally {
+      setExportBusy(false)
+    }
+  }, [exportBusy])
+
   return {
     view,
     setView,
@@ -473,6 +518,7 @@ export function useProductivityTracker() {
     currentSession,
     sessionStatus,
     busy,
+    exportBusy,
     hydrated,
     errorMessage,
     clearError,
@@ -480,6 +526,16 @@ export function useProductivityTracker() {
     webcam,
     activity,
     inference,
+    baseInference,
+    manualOverride,
+    calibrationOpen,
+    openCalibration,
+    closeCalibration,
+    saveCalibration,
+    clearCalibration,
+    handleExport,
+    clearManualOverride,
+    handleManualCorrection,
     handleStartSession,
     handlePauseSession,
     handleResumeSession,

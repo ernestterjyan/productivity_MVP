@@ -1,3 +1,4 @@
+import { CalibrationPanel } from '@/components/CalibrationPanel'
 import { DebugSignalsPanel } from '@/components/DebugSignalsPanel'
 import { HistoryPanel } from '@/components/HistoryPanel'
 import { SessionControls } from '@/components/SessionControls'
@@ -52,11 +53,13 @@ function App() {
           <div className="view-intro">
             <SectionCard
               title="Overview"
-              subtitle="Realtime attention estimate, local session timing, and today’s study breakdown."
+              subtitle="Realtime study-behavior estimate, local session timing, and today’s breakdown."
             >
               <p className="helper-copy">
                 Estimates are based on local signals only: face presence, rough
-                head orientation, head-down posture, and recent interaction.
+                head orientation, head-down posture, and recent interaction. Optional
+                calibration can tune thresholds for your own setup, but it still
+                remains a heuristic estimate.
               </p>
             </SectionCard>
           </div>
@@ -66,15 +69,16 @@ function App() {
               busy={tracker.busy}
               currentSession={tracker.currentSession}
               sessionStatus={tracker.sessionStatus}
-              onPause={tracker.handlePauseSession}
-              onReset={tracker.handleResetSession}
+              onPause={() => void tracker.handlePauseSession()}
+              onReset={() => void tracker.handleResetSession()}
               onResume={tracker.handleResumeSession}
-              onStart={tracker.handleStartSession}
-              onStop={tracker.handleStopSession}
+              onStart={() => void tracker.handleStartSession()}
+              onStop={() => void tracker.handleStopSession()}
             />
 
             <WebcamPanel
               activity={tracker.activity}
+              calibrationActive={tracker.calibrationOpen}
               previewEnabled={tracker.settings.webcamPreviewEnabled}
               sessionStatus={tracker.sessionStatus}
               videoRef={tracker.videoRef}
@@ -84,6 +88,10 @@ function App() {
             <StateSummaryPanel
               activity={tracker.activity}
               inference={tracker.inference}
+              manualOverride={tracker.manualOverride}
+              onClearManualCorrection={() => void tracker.clearManualOverride()}
+              onManualCorrection={(state) => void tracker.handleManualCorrection(state)}
+              sessionStatus={tracker.sessionStatus}
               webcam={tracker.webcam}
             />
 
@@ -111,12 +119,33 @@ function App() {
         </>
       ) : null}
 
-      {showHistory ? <HistoryPanel recentSessions={tracker.recentSessions} /> : null}
+      {showHistory ? (
+        <HistoryPanel
+          exportBusy={tracker.exportBusy}
+          onExport={(format) => void tracker.handleExport(format)}
+          recentSessions={tracker.recentSessions}
+        />
+      ) : null}
 
       {showSettings ? (
         <SettingsPanel
-          settings={tracker.settings}
+          calibrationOpen={tracker.calibrationOpen}
+          onClearCalibration={tracker.clearCalibration}
+          onOpenCalibration={tracker.openCalibration}
           onSettingChange={updateSetting}
+          sessionStatus={tracker.sessionStatus}
+          settings={tracker.settings}
+        />
+      ) : null}
+
+      {tracker.calibrationOpen ? (
+        <CalibrationPanel
+          active={tracker.calibrationOpen}
+          onCancel={tracker.closeCalibration}
+          onComplete={tracker.saveCalibration}
+          settings={tracker.settings}
+          videoRef={tracker.videoRef}
+          webcam={tracker.webcam}
         />
       ) : null}
     </div>
