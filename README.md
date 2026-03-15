@@ -229,8 +229,17 @@ git clone https://github.com/ernestterjyan/productivity_MVP.git
 cd productivity_MVP
 npm install
 npm run setup:assets
+npm run tauri:check
 npm run tauri:dev
 ```
+
+If `cargo` was just installed and your current shell still cannot find it, run:
+
+```bash
+source "$HOME/.cargo/env"
+```
+
+The desktop scripts now do a preflight check before launching Tauri. On Linux they fail early with the exact Rust or WebKitGTK install commands instead of a raw `cargo metadata` error.
 
 ### Install
 
@@ -261,6 +270,7 @@ Desktop app with Tauri:
 
 ```bash
 cd productivity_MVP
+npm run tauri:check
 npm run tauri:dev
 ```
 
@@ -275,6 +285,7 @@ Desktop bundle:
 
 ```bash
 cd productivity_MVP
+npm run tauri:check
 npm run tauri:build
 ```
 
@@ -292,6 +303,55 @@ cd productivity_MVP
 npm run test
 ```
 
+Desktop environment check only:
+
+```bash
+cd productivity_MVP
+npm run tauri:check
+```
+
+## Desktop Troubleshooting
+
+If you see this:
+
+```text
+failed to run 'cargo metadata' ... No such file or directory (os error 2)
+```
+
+Rust is not installed or the current shell does not have Cargo on `PATH`.
+
+Run:
+
+```bash
+curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf | sh
+source "$HOME/.cargo/env"
+cargo -V
+```
+
+Then retry:
+
+```bash
+npm run tauri:check
+npm run tauri:dev
+```
+
+If you see a missing `webkit2gtk-4.1` or other `pkg-config` package error on Linux, install the desktop prerequisites:
+
+```bash
+sudo apt update
+sudo apt install -y \
+  libwebkit2gtk-4.1-dev \
+  build-essential \
+  curl \
+  wget \
+  file \
+  libxdo-dev \
+  libssl-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  pkg-config
+```
+
 ## Current Verification Status
 
 Verified in this environment:
@@ -300,6 +360,7 @@ Verified in this environment:
 - `npm run lint`
 - `npm run build`
 - `npm run test`
+- `npm run tauri:check` fails early with a clear Linux dependency message instead of falling through to a raw Cargo error
 
 Verified by automated tests:
 
@@ -315,8 +376,8 @@ Not fully verifiable in this environment:
 
 Reason:
 
-- `cargo` is not installed here
-- the Linux WebKitGTK desktop dependency set is also incomplete in this container
+- the Linux WebKitGTK desktop dependency set is incomplete in this container
+- the preflight now fails with explicit install commands instead of dropping into a Cargo or pkg-config error
 
 ## Limitations
 
@@ -325,7 +386,7 @@ Reason:
 - Input activity is in-app only for the MVP
 - Daily summaries are grouped by session start date, so sessions spanning midnight are not perfectly split across days
 - Webcam quality and lighting can affect landmark stability
-- The Tauri SQLite backend is implemented but not executed here because the Rust toolchain is unavailable in this container
+- The Tauri SQLite backend is implemented, but this container still cannot run the desktop shell because Linux WebKitGTK development packages are missing
 - If the camera is unavailable, the app falls back to an `UNCERTAIN` estimate rather than pretending input activity alone proves focus
 
 ## Future Roadmap
